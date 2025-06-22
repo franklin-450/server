@@ -90,7 +90,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 app.get('/api/files', (_, res) => res.json(metadataCache));
 
 // 🧾 Delete File (admin key protected)
-app.delete('/api/delete/:filename', async (req, res) => {
+app.delete('/api/files/:filename', async (req, res) => {
     if (req.headers.apikey !== ADMIN_API_KEY)
         return res.status(403).json({ success: false, message: 'Unauthorized' });
 
@@ -153,16 +153,27 @@ app.post('/api/pay', async (req, res) => {
     }
 });
 
-// ⬇️ Download File with Token
+// ⬇️ Download File with Token or Admin Access
 app.get('/api/files/:filename', async (req, res) => {
     const { token } = req.query;
-    const valid = downloadTokens.get(token);
-    if (!valid || valid.filename !== req.params.filename || valid.expires < Date.now()) {
+    const filename = req.params.filename;
+    const fullPath = path.join(uploadDir, filename);
+
+    const validToken = downloadTokens.get(token);
+    const isAdmin = req.headers.apikey === ADMIN_API_KEY;
+
+    if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
         return res.status(403).send('Access Denied');
     }
 
-    downloadTokens.delete(token);
-    res.sendFile(path.join(uploadDir, req.params.filename));
+    if (validToken) downloadTokens.delete(token);
+
+    try {
+        await fs.access(fullPath);
+        res.sendFile(fullPath);
+    } catch {
+        res.status(404).send('File not found');
+    }
 });
 
 // 🚀 Start Server
