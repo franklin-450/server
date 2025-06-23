@@ -13,9 +13,9 @@ const PORT = 3000;
 // === CONFIG ===
 const CONSUMER_KEY = 'YOUR_MPESA_CONSUMER_KEY';
 const CONSUMER_SECRET = 'YOUR_MPESA_CONSUMER_SECRET';
-const SHORT_CODE = '174379';
+const SHORT_CODE = '247247';
 const PASSKEY = 'YOUR_PASSKEY';
-const CALLBACK_URL = 'https://yourdomain.com/api/confirm';
+const CALLBACK_URL = 'https://server-1-bmux.onrender.com/api/confirm';
 const ADMIN_API_KEY = 'secret-admin-key';
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -24,6 +24,8 @@ const metadataPath = path.join(uploadDir, 'metadata.json');
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
+app.use(express.json()); // Ensure raw body parsing for JSON payload
+
 
 // === Init Directories & Metadata Cache ===
 let metadataCache = [];
@@ -89,22 +91,19 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // 📄 Get All Files
 app.get('/api/files', (_, res) => res.json(metadataCache));
 
-// 🧾 Delete File (admin key protected)
+// 🧾 Delete File (no auth)
 app.delete('/api/files/:filename', async (req, res) => {
-    if (req.headers.apikey !== ADMIN_API_KEY)
-        return res.status(403).json({ success: false, message: 'Unauthorized' });
+  const filename = req.params.filename;
+  const fullPath = path.join(uploadDir, filename);
 
-    const filename = req.params.filename;
-    const fullPath = path.join(uploadDir, filename);
-
-    try {
-        await fs.unlink(fullPath);
-        metadataCache = metadataCache.filter(f => f.filename !== filename);
-        await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
-        res.json({ success: true, message: 'File deleted' });
-    } catch (e) {
-        res.status(404).json({ success: false, message: 'File not found' });
-    }
+  try {
+    await fs.unlink(fullPath);
+    metadataCache = metadataCache.filter(f => f.filename !== filename);
+    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
+    res.json({ success: true, message: 'File deleted' });
+  } catch (e) {
+    res.status(404).json({ success: false, message: 'File not found' });
+  }
 });
 
 // 💸 M-Pesa STK Push
@@ -151,6 +150,45 @@ app.post('/api/pay', async (req, res) => {
         console.error('MPESA Error:', err.message);
         res.status(500).json({ success: false, message: 'Payment failed' });
     }
+});
+
+const transactionLogPath = path.join(__dirname, 'transactions.json');
+
+// Ensure transactions file exists
+(async () => {
+  try {
+    await fs.access(transactionLogPath);
+  } catch {
+    await fs.writeFile(transactionLogPath, '[]');
+  }
+})();
+
+// ✅ CONFIRMATION ENDPOINT FOR SAFARICOM
+app.post('/api/confirm', async (req, res) => {
+  try {
+    const transaction = req.body;
+
+    console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
+
+    // Extract some useful info
+    const paymentInfo = {
+      id: Date.now(),
+      mpesaReceipt: transaction?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === 'MpesaReceiptNumber')?.Value || 'N/A',
+      amount: transaction?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === 'Amount')?.Value || 'N/A',
+      phone: transaction?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === 'PhoneNumber')?.Value || 'N/A',
+      timestamp: new Date().toISOString()
+    };
+
+    // Save to transactions.json
+    const existingLogs = JSON.parse(await fs.readFile(transactionLogPath));
+    existingLogs.push(paymentInfo);
+    await fs.writeFile(transactionLogPath, JSON.stringify(existingLogs, null, 2));
+
+    res.status(200).send('Confirmation received'); // Required by Safaricom
+  } catch (err) {
+    console.error('❌ Error handling /api/confirm:', err);
+    res.status(500).send('Error');
+  }
 });
 
 // ⬇️ Download File with Token or Admin Access
