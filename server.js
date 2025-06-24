@@ -89,6 +89,17 @@ const fileInfo = {
 
     res.json({ success: true, file: fileInfo });
 });
+const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
+
+// Make sure file exists
+(async () => {
+  try {
+    await fs.access(freeDownloadLogPath);
+  } catch {
+    await fs.writeFile(freeDownloadLogPath, '[]');
+  }
+})();
+
 
 app.get('/api/files/:filename', async (req, res) => {
   const { token } = req.query;
@@ -100,9 +111,9 @@ app.get('/api/files/:filename', async (req, res) => {
   const isAdmin = req.headers.apikey === ADMIN_API_KEY;
 
   // Allow preview OR valid token OR admin
-  if (!isPreview && !isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
-    return res.status(403).send('Access Denied');
-  }
+  //if (!isPreview && !isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
+    //return res.status(403).send('Access Denied');
+  //}
 
   if (validToken) downloadTokens.delete(token);
 
@@ -216,25 +227,40 @@ app.post('/api/confirm', async (req, res) => {
 
 // ⬇️ Download File with Token or Admin Access
 app.get('/api/files/:filename', async (req, res) => {
-    const { token } = req.query;
-    const filename = req.params.filename;
-    const fullPath = path.join(uploadDir, filename);
+  const filename = req.params.filename;
+  const fullPath = path.join(uploadDir, filename);
 
-    const validToken = downloadTokens.get(token);
-    const isAdmin = req.headers.apikey === ADMIN_API_KEY;
+  // === FREE ACCESS PERIOD ===
+  const FREE_UNTIL = new Date("2025-07-01T00:00:00+03:00"); // adjust date/time as needed
+  const now = new Date();
 
-    if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
-        return res.status(403).send('Access Denied');
-    }
-
-    if (validToken) downloadTokens.delete(token);
-
+  if (now <= FREE_UNTIL) {
     try {
-        await fs.access(fullPath);
-        res.sendFile(fullPath);
+      await fs.access(fullPath);
+      console.log(`✅ Free download granted for ${filename}`);
+      return res.sendFile(fullPath);
     } catch {
-        res.status(404).send('File not found');
+      return res.status(404).send('File not found');
     }
+  }
+
+  // === NORMAL ACCESS RULES ===
+  const { token } = req.query;
+  const validToken = downloadTokens.get(token);
+  const isAdmin = req.headers.apikey === ADMIN_API_KEY;
+
+  if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
+    return res.status(403).send('Access Denied');
+  }
+
+  if (validToken) downloadTokens.delete(token);
+
+  try {
+    await fs.access(fullPath);
+    return res.sendFile(fullPath);
+  } catch {
+    return res.status(404).send('File not found');
+  }
 });
 
 // 🚀 Start Server
