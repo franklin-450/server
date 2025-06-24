@@ -66,21 +66,23 @@ setInterval(() => {
 
 // 🔼 Upload File
 app.post('/api/upload', upload.single('file'), async (req, res) => {
-    const { title, subject, class: className, price } = req.body;
-    if (!req.file || !title || !subject || !className || !price)
-        return res.status(400).json({ success: false, message: 'Missing fields' });
+const { title, subject, class: className, price, type } = req.body;
+if (!req.file || !title || !subject || !className || !price || !type)
+    return res.status(400).json({ success: false, message: 'Missing fields' });
 
-    const fileInfo = {
-        id: Date.now(),
-        title,
-        subject,
-        class: className,
-        price,
-        filename: req.file.filename,
-        mimetype: req.file.mimetype,
-        path: req.file.path,
-        uploadDate: new Date().toISOString()
-    };
+const fileInfo = {
+    id: Date.now(),
+    title,
+    subject,
+    class: className,
+    price,
+    type, // ✅ Save the type here
+    filename: req.file.filename,
+    mimetype: req.file.mimetype,
+    path: req.file.path,
+    uploadDate: new Date().toISOString()
+};
+
 
     metadataCache.push(fileInfo);
     await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
