@@ -1,4 +1,4 @@
-const express = require('express');
+999999999const express = require('express');
 const multer = require('multer');
 const fs = require('fs/promises');
 const path = require('path');
@@ -90,8 +90,29 @@ const fileInfo = {
     res.json({ success: true, file: fileInfo });
 });
 
-// 📄 Get All Files
-app.get('/api/files', (_, res) => res.json(metadataCache));
+app.get('/api/files/:filename', async (req, res) => {
+  const { token } = req.query;
+  const filename = req.params.filename;
+  const fullPath = path.join(uploadDir, filename);
+
+  const isPreview = token === 'preview';
+  const validToken = downloadTokens.get(token);
+  const isAdmin = req.headers.apikey === ADMIN_API_KEY;
+
+  // Allow preview OR valid token OR admin
+  if (!isPreview && !isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
+    return res.status(403).send('Access Denied');
+  }
+
+  if (validToken) downloadTokens.delete(token);
+
+  try {
+    await fs.access(fullPath);
+    res.sendFile(fullPath);
+  } catch {
+    res.status(404).send('File not found');
+  }
+});
 
 // 🧾 Delete File (no auth)
 app.delete('/api/files/:filename', async (req, res) => {
