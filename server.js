@@ -115,7 +115,7 @@ app.get('/api/files/:filename', async (req, res) => {
     //return res.status(403).send('Access Denied');
   //}
 
-  if (validToken) downloadTokens.delete(token);
+  //if (validToken) downloadTokens.delete(token);
 
   try {
     await fs.access(fullPath);
@@ -245,13 +245,13 @@ app.get('/api/files/:filename', async (req, res) => {
   }
 
   // === NORMAL ACCESS RULES ===
-  const { token } = req.query;
-  const validToken = downloadTokens.get(token);
-  const isAdmin = req.headers.apikey === ADMIN_API_KEY;
+  //const { token } = req.query;
+  //const validToken = downloadTokens.get(token);
+  //const isAdmin = req.headers.apikey === ADMIN_API_KEY;
 
-  if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
-    return res.status(403).send('Access Denied');
-  }
+  //if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
+//    return res.status(403).send('Access Denied');
+  //}
 
   if (validToken) downloadTokens.delete(token);
 
