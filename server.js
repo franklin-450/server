@@ -24,12 +24,9 @@ const metadataPath = path.join(uploadDir, 'metadata.json');
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
-app.use(express.json()); // Ensure raw body parsing for JSON payload
+app.use(express.json());
 
-
-// === Init Directories & Metadata Cache ===
 let metadataCache = [];
-
 (async () => {
     try {
         await fs.mkdir(uploadDir, { recursive: true });
@@ -40,7 +37,6 @@ let metadataCache = [];
     }
 })();
 
-// === Multer Upload Setup ===
 const storage = multer.diskStorage({
     destination: (_, __, cb) => cb(null, uploadDir),
     filename: (_, file, cb) => {
@@ -51,47 +47,40 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === Token Manager ===
 const generateToken = () => crypto.randomBytes(16).toString('hex');
 const downloadTokens = new Map();
-
 setInterval(() => {
     const now = Date.now();
     for (const [token, data] of downloadTokens) {
         if (data.expires < now) downloadTokens.delete(token);
     }
-}, 60000); // Clean every minute
+}, 60000);
 
-// === ROUTES ===
-
-// 🔼 Upload File
 app.post('/api/upload', upload.single('file'), async (req, res) => {
-const { title, subject, class: className, price, type } = req.body;
-if (!req.file || !title || !subject || !className || !price || !type)
-    return res.status(400).json({ success: false, message: 'Missing fields' });
+    const { title, subject, class: className, price, type } = req.body;
+    if (!req.file || !title || !subject || !className || !price || !type)
+        return res.status(400).json({ success: false, message: 'Missing fields' });
 
-const fileInfo = {
-    id: Date.now(),
-    title,
-    subject,
-    class: className,
-    price,
-    type, // ✅ Save the type here
-    filename: req.file.filename,
-    mimetype: req.file.mimetype,
-    path: req.file.path,
-    uploadDate: new Date().toISOString()
-};
-
+    const fileInfo = {
+        id: Date.now(),
+        title,
+        subject,
+        class: className,
+        price,
+        type,
+        filename: req.file.filename,
+        mimetype: req.file.mimetype,
+        path: req.file.path,
+        uploadDate: new Date().toISOString()
+    };
 
     metadataCache.push(fileInfo);
     await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
 
     res.json({ success: true, file: fileInfo });
 });
-const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
-// Make sure file exists
+const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 (async () => {
   try {
     await fs.access(freeDownloadLogPath);
@@ -100,32 +89,41 @@ const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
   }
 })();
 
+app.get('/api/files', (_, res) => res.json(metadataCache));
 
 app.get('/api/files/:filename', async (req, res) => {
-  const { token } = req.query;
   const filename = req.params.filename;
   const fullPath = path.join(uploadDir, filename);
+  const now = new Date();
+  const FREE_UNTIL = new Date("2025-07-01T00:00:00+03:00");
 
-  const isPreview = token === 'preview';
+  if (now <= FREE_UNTIL) {
+    try {
+      await fs.access(fullPath);
+      return res.sendFile(fullPath);
+    } catch {
+      return res.status(404).send('File not found');
+    }
+  }
+
+  const { token } = req.query;
   const validToken = downloadTokens.get(token);
   const isAdmin = req.headers.apikey === ADMIN_API_KEY;
 
-  // Allow preview OR valid token OR admin
-  //if (!isPreview && !isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
-    //return res.status(403).send('Access Denied');
-  //}
+  if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
+    return res.status(403).send('Access Denied');
+  }
 
-  //if (validToken) downloadTokens.delete(token);
+  if (validToken) downloadTokens.delete(token);
 
   try {
     await fs.access(fullPath);
-    res.sendFile(fullPath);
+    return res.sendFile(fullPath);
   } catch {
-    res.status(404).send('File not found');
+    return res.status(404).send('File not found');
   }
 });
 
-// 🧾 Delete File (no auth)
 app.delete('/api/files/:filename', async (req, res) => {
   const filename = req.params.filename;
   const fullPath = path.join(uploadDir, filename);
@@ -140,7 +138,6 @@ app.delete('/api/files/:filename', async (req, res) => {
   }
 });
 
-// 💸 M-Pesa STK Push
 app.post('/api/pay', async (req, res) => {
     const { phone, filename } = req.body;
     if (!phone || !filename) return res.status(400).json({ success: false, message: 'Missing info' });
@@ -187,8 +184,6 @@ app.post('/api/pay', async (req, res) => {
 });
 
 const transactionLogPath = path.join(__dirname, 'transactions.json');
-
-// Ensure transactions file exists
 (async () => {
   try {
     await fs.access(transactionLogPath);
@@ -197,14 +192,11 @@ const transactionLogPath = path.join(__dirname, 'transactions.json');
   }
 })();
 
-// ✅ CONFIRMATION ENDPOINT FOR SAFARICOM
 app.post('/api/confirm', async (req, res) => {
   try {
     const transaction = req.body;
-
     console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
 
-    // Extract some useful info
     const paymentInfo = {
       id: Date.now(),
       mpesaReceipt: transaction?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === 'MpesaReceiptNumber')?.Value || 'N/A',
@@ -213,55 +205,15 @@ app.post('/api/confirm', async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    // Save to transactions.json
     const existingLogs = JSON.parse(await fs.readFile(transactionLogPath));
     existingLogs.push(paymentInfo);
     await fs.writeFile(transactionLogPath, JSON.stringify(existingLogs, null, 2));
 
-    res.status(200).send('Confirmation received'); // Required by Safaricom
+    res.status(200).send('Confirmation received');
   } catch (err) {
     console.error('❌ Error handling /api/confirm:', err);
     res.status(500).send('Error');
   }
 });
 
-// ⬇️ Download File with Token or Admin Access
-app.get('/api/files/:filename', async (req, res) => {
-  const filename = req.params.filename;
-  const fullPath = path.join(uploadDir, filename);
-
-  // === FREE ACCESS PERIOD ===
-  const FREE_UNTIL = new Date("2025-07-01T00:00:00+03:00"); // adjust date/time as needed
-  const now = new Date();
-
-  if (now <= FREE_UNTIL) {
-    try {
-      await fs.access(fullPath);
-      console.log(`✅ Free download granted for ${filename}`);
-      return res.sendFile(fullPath);
-    } catch {
-      return res.status(404).send('File not found');
-    }
-  }
-
-  // === NORMAL ACCESS RULES ===
-  //const { token } = req.query;
-  //const validToken = downloadTokens.get(token);
-  //const isAdmin = req.headers.apikey === ADMIN_API_KEY;
-
-  //if (!isAdmin && (!validToken || validToken.filename !== filename || validToken.expires < Date.now())) {
-//    return res.status(403).send('Access Denied');
-  //}
-
-  if (validToken) downloadTokens.delete(token);
-
-  try {
-    await fs.access(fullPath);
-    return res.sendFile(fullPath);
-  } catch {
-    return res.status(404).send('File not found');
-  }
-});
-
-// 🚀 Start Server
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
