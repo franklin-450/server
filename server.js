@@ -11,10 +11,10 @@ const app = express();
 const PORT = 3000;
 
 // === CONFIG ===
-const CONSUMER_KEY = 'YOUR_MPESA_CONSUMER_KEY';
-const CONSUMER_SECRET = 'YOUR_MPESA_CONSUMER_SECRET';
-const SHORT_CODE = '247247';
-const PASSKEY = 'YOUR_PASSKEY';
+const CONSUMER_KEY = 'Glgbr8Pn6JJFqzG1w0nWfxHfdIpyPtlAZYUnzVYNAgrl2G7O';
+const CONSUMER_SECRET = '2vbpVGO9t5qAOTMIbU7KmGbwcxZ2LHOhjlurhX02M79TK7W8g1qhNF1h9uO6ftLh';
+const SHORT_CODE = '174379';
+const PASSKEY = 'bfb279f9aa9bdbcf33b040938b0f8f5c';
 const CALLBACK_URL = 'https://server-1-bmux.onrender.com/api/confirm';
 const ADMIN_API_KEY = 'secret-admin-key';
 
