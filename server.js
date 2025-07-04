@@ -178,7 +178,7 @@ app.post('/api/pay', async (req, res) => {
         downloadTokens.set(token, { filename, expires: Date.now() + 5 * 60 * 1000 });
         res.json({ success: true, token });
     } catch (err) {
-        console.error('MPESA Error:', err.message);
+        console.error('MPESA Error:', err.response?.data || err.message);
         res.status(500).json({ success: false, message: 'Payment failed' });
     }
 });
