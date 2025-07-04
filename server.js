@@ -28,8 +28,9 @@ app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(express.json());
 
-// === Init ===
 let metadataCache = [];
+const confirmations = new Map(); // Track confirmations
+
 (async () => {
     try {
         await fs.mkdir(uploadDir, { recursive: true });
@@ -71,7 +72,6 @@ setInterval(() => {
     }
 }, 60000);
 
-// === File Upload ===
 app.post('/api/upload', upload.single('file'), async (req, res) => {
     const { title, subject, class: className, price, type } = req.body;
     if (!req.file || !title || !subject || !className || !price || !type)
@@ -95,10 +95,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     res.json({ success: true, file: fileInfo });
 });
 
-// === Get Files ===
 app.get('/api/files', (_, res) => res.json(metadataCache));
 
-// === Download File ===
 app.get('/api/files/:filename', async (req, res) => {
     const { filename } = req.params;
     const { token } = req.query;
@@ -122,7 +120,6 @@ app.get('/api/files/:filename', async (req, res) => {
     return res.status(403).send('Access Denied');
 });
 
-// === Delete File ===
 app.delete('/api/files/:filename', async (req, res) => {
     const { filename } = req.params;
     const fullPath = path.join(uploadDir, filename);
@@ -137,7 +134,6 @@ app.delete('/api/files/:filename', async (req, res) => {
     }
 });
 
-// === Initiate M-Pesa Payment ===
 app.post('/api/pay', async (req, res) => {
     const { phone, filename } = req.body;
     if (!phone || !filename) return res.status(400).json({ success: false, message: 'Missing info' });
@@ -151,7 +147,7 @@ app.post('/api/pay', async (req, res) => {
         const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
         const password = Buffer.from(SHORT_CODE + PASSKEY + timestamp).toString('base64');
 
-        await axios.post('https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest', {
+        const stkResponse = await axios.post('https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest', {
             BusinessShortCode: SHORT_CODE,
             Password: password,
             Timestamp: timestamp,
@@ -167,30 +163,36 @@ app.post('/api/pay', async (req, res) => {
             headers: { Authorization: `Bearer ${access_token}` }
         });
 
-        const token = generateToken();
-        downloadTokens.set(token, { filename, expires: Date.now() + 5 * 60 * 1000 });
-        res.json({ success: true, token });
+        const checkoutId = stkResponse.data.CheckoutRequestID;
+        confirmations.set(checkoutId, false);
+        res.json({ success: true, checkoutId });
     } catch (err) {
-        console.error('❌ M-PESA STK Push Failed:', {
-            message: err.message,
-            responseData: err.response?.data,
-            status: err.response?.status,
-            headers: err.response?.headers
-        });
-        res.status(500).json({ success: false, message: 'Payment failed. See logs.' });
+        console.error('MPESA Error:', err.message);
+        res.status(500).json({ success: false, message: 'Payment failed' });
     }
 });
 
-// === M-Pesa Confirmation ===
+app.get('/api/status/:id', (req, res) => {
+    const status = confirmations.get(req.params.id);
+    res.json({ paid: status || false });
+});
+
 app.post('/api/confirm', async (req, res) => {
     try {
         const transaction = req.body;
         console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
 
-        const item = name => transaction?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
+        const callback = transaction?.Body?.stkCallback;
+        const checkoutId = callback?.CheckoutRequestID;
+        const status = callback?.ResultCode;
+
+        confirmations.set(checkoutId, status === 0);
+
+        const item = name => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
 
         const paymentInfo = {
             id: Date.now(),
+            checkoutId,
             mpesaReceipt: item('MpesaReceiptNumber'),
             amount: item('Amount'),
             phone: item('PhoneNumber'),
