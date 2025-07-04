@@ -171,8 +171,13 @@ app.post('/api/pay', async (req, res) => {
         downloadTokens.set(token, { filename, expires: Date.now() + 5 * 60 * 1000 });
         res.json({ success: true, token });
     } catch (err) {
-        console.error('MPESA Error:', err.message);
-        res.status(500).json({ success: false, message: 'Payment failed' });
+        console.error('❌ M-PESA STK Push Failed:', {
+            message: err.message,
+            responseData: err.response?.data,
+            status: err.response?.status,
+            headers: err.response?.headers
+        });
+        res.status(500).json({ success: false, message: 'Payment failed. See logs.' });
     }
 });
 
