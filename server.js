@@ -101,7 +101,7 @@ app.get('/api/files/:filename', async (req, res) => {
     const { filename } = req.params;
     const { token } = req.query;
     const fullPath = path.join(uploadDir, filename);
-    const FREE_UNTIL = new Date('2025-07-01T00:00:00+03:00');
+    const FREE_UNTIL = new Date('2025-07-013T00:00:00+03:00');
     const now = new Date();
 
     const isAdmin = req.headers.apikey === ADMIN_API_KEY;
