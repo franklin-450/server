@@ -171,22 +171,20 @@ app.post('/api/pay', async (req, res) => {
         res.status(500).json({ success: false, message: 'Payment failed' });
     }
 });
-// Static secret key (store in .env in production)
-const ADMIN_SECRET = 'schemehub250';
+const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton']; // Array of allowed keys
 
-// Admin Login Endpoint
 app.post('/api/admin-login', (req, res) => {
   const { key } = req.body;
 
   if (!key) {
-    return res.status(400).json({ success: false, message: 'Key is required' });
+    return res.status(400).json({ success: false, message: "Missing key" });
   }
 
-  if (key === ADMIN_SECRET) {
+  if (ADMIN_SECRET.includes(key)) {
     return res.json({ success: true });
-  } else {
-    return res.status(401).json({ success: false, message: 'Invalid key' });
   }
+
+  return res.status(401).json({ success: false, message: "Invalid key" });
 });
 
 app.get('/api/status/:id', (req, res) => {
