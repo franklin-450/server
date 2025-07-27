@@ -80,22 +80,32 @@ app.post('/api/grant-access', async (req, res) => {
   }
 });
 
-// ✅ Verify access
-app.post('/api/verify-access', async (req, res) => {
-  const { email } = req.body;
-  if (!email || typeof email !== 'string') {
-    return res.status(400).json({ success: false, message: 'Email is required.' });
-  }
+// app.post('/api/verify-access', async (req, res) => {
+  try {
+    const { email } = req.body;
 
-  const lowerEmail = email.trim().toLowerCase();
-  const allowed = await getAllowedEmails();
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ success: false, message: 'Email is required and must be a string.' });
+    }
 
-  if (allowed.includes(lowerEmail)) {
-    return res.json({ success: true, message: 'Access granted.' });
-  } else {
-    return res.status(403).json({ success: false, message: 'Access denied. Contact admin.' });
+    const lowerEmail = email.trim().toLowerCase();
+    const allowed = await getAllowedEmails();
+
+    if (!Array.isArray(allowed)) {
+      return res.status(500).json({ success: false, message: 'Access list is corrupted or missing.' });
+    }
+
+    if (allowed.includes(lowerEmail)) {
+      return res.status(200).json({ success: true, message: 'Access granted.' });
+    } else {
+      return res.status(403).json({ success: false, message: 'Access denied. Contact admin.' });
+    }
+  } catch (error) {
+    console.error('❌ Verify Error:', error.message);
+    res.status(500).json({ success: false, message: 'Server error during access verification.' });
   }
 });
+
 
 // ✅ Root route
 app.get('/', (req, res) => {
