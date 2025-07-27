@@ -27,52 +27,82 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(express.json());
-const ACCESS_FILE = 'access.json';
+const ACCESS_FILE = path.join(__dirname, 'access.json');
 
-// Load allowed emails from file
-function getAllowedEmails() {
+// Helper: Ensure access.json exists
+async function ensureAccessFile() {
   try {
-    const data = fs.readFileSync(ACCESS_FILE, 'utf-8');
+    await fs.access(ACCESS_FILE);
+  } catch (err) {
+    // File doesn't exist, create it
+    await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: [] }, null, 2));
+  }
+}
+
+// Helper: Get allowed emails
+async function getAllowedEmails() {
+  try {
+    await ensureAccessFile();
+    const data = await fs.readFile(ACCESS_FILE, 'utf-8');
     const parsed = JSON.parse(data);
     return parsed.allowed || [];
   } catch (err) {
+    console.error('❌ Error reading access.json:', err.message);
     return [];
   }
 }
 
-// ✅ API: Verify if email has access
-app.post('/api/verify-access', (req, res) => {
+// Helper: Save allowed emails
+async function saveAllowedEmails(emails) {
+  try {
+    await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: emails }, null, 2));
+  } catch (err) {
+    console.error('❌ Error writing to access.json:', err.message);
+  }
+}
+
+// ✅ Grant access
+app.post('/api/grant-access', async (req, res) => {
   const { email } = req.body;
-  if (!email) {
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ success: false, message: 'Valid email is required.' });
+  }
+
+  const lowerEmail = email.trim().toLowerCase();
+  const allowed = await getAllowedEmails();
+
+  if (!allowed.includes(lowerEmail)) {
+    allowed.push(lowerEmail);
+    await saveAllowedEmails(allowed);
+    return res.json({ success: true, message: 'Access granted.' });
+  } else {
+    return res.json({ success: false, message: 'Email already has access.' });
+  }
+});
+
+// ✅ Verify access
+app.post('/api/verify-access', async (req, res) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
     return res.status(400).json({ success: false, message: 'Email is required.' });
   }
 
-  const allowedEmails = getAllowedEmails();
-  const isAllowed = allowedEmails.includes(email.toLowerCase());
+  const lowerEmail = email.trim().toLowerCase();
+  const allowed = await getAllowedEmails();
 
-  if (isAllowed) {
+  if (allowed.includes(lowerEmail)) {
     return res.json({ success: true, message: 'Access granted.' });
   } else {
     return res.status(403).json({ success: false, message: 'Access denied. Contact admin.' });
   }
 });
 
-// ✅ API: Add new email (optional, for admin use)
-app.post('/api/add-email', (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Email is required.' });
-  }
-
-  let allowedEmails = getAllowedEmails();
-  if (!allowedEmails.includes(email.toLowerCase())) {
-    allowedEmails.push(email.toLowerCase());
-    fs.writeFileSync(ACCESS_FILE, JSON.stringify({ allowed: allowedEmails }, null, 2));
-  }
-
-  return res.json({ success: true, message: 'Email added to access list.' });
+// ✅ Root route
+app.get('/', (req, res) => {
+  res.send('🎉 Email Access Control API is running.');
 });
 
+// ✅ Start server
 let metadataCache = [];
 const confirmations = new Map(); // Track confirmations
 
