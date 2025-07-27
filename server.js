@@ -27,9 +27,55 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(express.json());
+const ACCESS_FILE = 'access.json';
+
+// Load allowed emails from file
+function getAllowedEmails() {
+  try {
+    const data = fs.readFileSync(ACCESS_FILE, 'utf-8');
+    const parsed = JSON.parse(data);
+    return parsed.allowed || [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// ✅ API: Verify if email has access
+app.post('/api/verify-access', (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Email is required.' });
+  }
+
+  const allowedEmails = getAllowedEmails();
+  const isAllowed = allowedEmails.includes(email.toLowerCase());
+
+  if (isAllowed) {
+    return res.json({ success: true, message: 'Access granted.' });
+  } else {
+    return res.status(403).json({ success: false, message: 'Access denied. Contact admin.' });
+  }
+});
+
+// ✅ API: Add new email (optional, for admin use)
+app.post('/api/add-email', (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Email is required.' });
+  }
+
+  let allowedEmails = getAllowedEmails();
+  if (!allowedEmails.includes(email.toLowerCase())) {
+    allowedEmails.push(email.toLowerCase());
+    fs.writeFileSync(ACCESS_FILE, JSON.stringify({ allowed: allowedEmails }, null, 2));
+  }
+
+  return res.json({ success: true, message: 'Email added to access list.' });
+});
 
 let metadataCache = [];
 const confirmations = new Map(); // Track confirmations
+
 
 (async () => {
     try {
