@@ -27,6 +27,8 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(express.json());
+app.use('/files', express.static(path.join(__dirname, 'uploads')));
+
 
 const ACCESS_FILE = path.join(__dirname, 'access.json');
 
