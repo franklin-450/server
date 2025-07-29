@@ -40,10 +40,10 @@ async function ensureAccessFile() {
     await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: [] }, null, 2));
   }
 }
-const accessPath = path.join(__dirname, 'access.json');
-app.use(express.json());
 
-// GET all access emails
+const accessPath = './access.json';
+
+// Get all access emails
 app.get('/api/access', async (req, res) => {
   try {
     const data = await fs.readFile(accessPath, 'utf-8');
@@ -53,7 +53,7 @@ app.get('/api/access', async (req, res) => {
   }
 });
 
-// POST: Add a new email with expiry
+// Add a new email with expiry
 app.post('/api/access', async (req, res) => {
   const { email, days } = req.body;
   if (!email || !days) return res.status(400).json({ error: 'Email and days required' });
@@ -62,34 +62,36 @@ app.post('/api/access', async (req, res) => {
 
   try {
     let list = [];
+
     try {
-      const data = await fs.readFile(accessPath, 'utf-8');
-      list = JSON.parse(data);
-    } catch (e) {
-      // File may not exist yet
+      const file = await fs.readFile(accessPath, 'utf-8');
+      list = JSON.parse(file);
+    } catch (_) {
+      // file may not exist yet
+      list = [];
     }
 
-    list = list.filter(item => item.email !== email); // Remove duplicates
+    list = list.filter(item => item.email !== email); // remove duplicates
     list.push({ email, expiry });
 
     await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
-    res.json({ success: true, message: `Added ${email} (expires in ${days} days)` });
+    res.json({ success: true });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Failed to add email' });
   }
 });
 
-// DELETE: Remove email
+// Delete email
 app.delete('/api/access/:email', async (req, res) => {
   const email = decodeURIComponent(req.params.email);
 
   try {
-    const data = await fs.readFile(accessPath, 'utf-8');
-    let list = JSON.parse(data);
+    const file = await fs.readFile(accessPath, 'utf-8');
+    let list = JSON.parse(file);
     list = list.filter(item => item.email !== email);
-
     await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
-    res.json({ success: true, message: `${email} removed.` });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete email' });
   }
