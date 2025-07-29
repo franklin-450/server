@@ -103,7 +103,13 @@ async function getAllowedEmails() {
     await ensureAccessFile();
     const data = await fs.readFile(ACCESS_FILE, 'utf-8');
     const parsed = JSON.parse(data);
-    return Array.isArray(parsed.allowed) ? parsed.allowed : [];
+
+    const now = Date.now();
+
+    // Clean expired users
+    const valid = parsed.filter(entry => new Date(entry.expiry).getTime() > now);
+
+    return valid.map(entry => entry.email.toLowerCase());
   } catch (err) {
     console.error('❌ Error reading access.json:', err.message);
     return [];
@@ -111,12 +117,16 @@ async function getAllowedEmails() {
 }
 
 // ✅ Save allowed emails
-async function saveAllowedEmails(emails) {
-  try {
-    await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: emails }, null, 2));
-  } catch (err) {
-    console.error('❌ Error writing to access.json:', err.message);
-  }
+async function saveAllowedEmails(emailList) {
+  const now = Date.now();
+  const fiveDaysLater = new Date(now + 5 * 24 * 60 * 60 * 1000).toISOString();
+
+  const data = emailList.map(email => ({
+    email: email.toLowerCase(),
+    expiry: fiveDaysLater
+  }));
+
+  await fs.writeFile(ACCESS_FILE, JSON.stringify(data, null, 2));
 }
 
 // ✅ Grant access
