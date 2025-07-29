@@ -40,6 +40,60 @@ async function ensureAccessFile() {
     await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: [] }, null, 2));
   }
 }
+const accessPath = path.join(__dirname, 'access.json');
+app.use(express.json());
+
+// GET all access emails
+app.get('/api/access', async (req, res) => {
+  try {
+    const data = await fs.readFile(accessPath, 'utf-8');
+    res.json(JSON.parse(data));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to read access list' });
+  }
+});
+
+// POST: Add a new email with expiry
+app.post('/api/access', async (req, res) => {
+  const { email, days } = req.body;
+  if (!email || !days) return res.status(400).json({ error: 'Email and days required' });
+
+  const expiry = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  try {
+    let list = [];
+    try {
+      const data = await fs.readFile(accessPath, 'utf-8');
+      list = JSON.parse(data);
+    } catch (e) {
+      // File may not exist yet
+    }
+
+    list = list.filter(item => item.email !== email); // Remove duplicates
+    list.push({ email, expiry });
+
+    await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
+    res.json({ success: true, message: `Added ${email} (expires in ${days} days)` });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to add email' });
+  }
+});
+
+// DELETE: Remove email
+app.delete('/api/access/:email', async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+
+  try {
+    const data = await fs.readFile(accessPath, 'utf-8');
+    let list = JSON.parse(data);
+    list = list.filter(item => item.email !== email);
+
+    await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
+    res.json({ success: true, message: `${email} removed.` });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete email' });
+  }
+});
 
 // ✅ Get allowed emails
 async function getAllowedEmails() {
