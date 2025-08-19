@@ -6,15 +6,12 @@ const cors = require('cors');
 const crypto = require('crypto');
 const axios = require('axios');
 const bodyParser = require('body-parser');
+const moment = require("moment");
 
 const app = express();
 const PORT = 3000;
 
 // === CONFIGURATION ===
-const CONSUMER_KEY = 'Glgbr8Pn6JJFqzG1w0nWfxHfdIpyPtlAZYUnzVYNAgrl2G7O';
-const CONSUMER_SECRET = '2vbpVGO9t5qAOTMIbU7KmGbwcxZ2LHOhjlurhX02M79TK7W8g1qhNF1h9uO6ftLh';
-const SHORT_CODE = '174379';
-const PASSKEY = 'bfb279f9aa9bdbcf33b040938b0f8f5c';
 const CALLBACK_URL = 'https://server-1-bmux.onrender.com/api/confirm';
 const ADMIN_API_KEY = 'secret-admin-key';
 
@@ -289,43 +286,72 @@ app.delete('/api/files/:filename', async (req, res) => {
     }
 });
 
-app.post('/api/pay', async (req, res) => {
-    const { phone, filename } = req.body;
-    if (!phone || !filename) return res.status(400).json({ success: false, message: 'Missing info' });
+const consumerkey = "NkxcAadvkohxGErrIm84VAccHA3nfSSRd5DH0mIe9sv9DDCn";
+const consumerSecret = "x636VF0x52vZBorz0Xjunw1dKZjHq7bdCbZnQeYkjemV6eA30qgtk6vylr9DSe8v";
+const shortCode = "174379";
+const passKey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
 
-    try {
-        const tokenRes = await axios.get('https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials', {
-            auth: { username: CONSUMER_KEY, password: CONSUMER_SECRET }
-        });
+async function getAccessToken() {
+  const auth = Buffer.from(`${consumerkey}:${consumerSecret}`).toString("base64");
+  try {
+    const res = await axios.get(
+      "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
+      { headers: { Authorization: `Basic ${auth}` } }
+    );
+    return res.data.access_token;
+  } catch (err) {
+    console.error("Error getting access token:", err.response?.data || err.message);
+    throw err;
+  }
+}
 
-        const access_token = tokenRes.data.access_token;
-        const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-        const password = Buffer.from(SHORT_CODE + PASSKEY + timestamp).toString('base64');
+// 📌 Express route using same logic
+app.post("/api/pay", async (req, res) => {
+  const { phoneNumber, fileName, filePrice } = req.body;
 
-        const stkResponse = await axios.post('https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest', {
-            BusinessShortCode: SHORT_CODE,
-            Password: password,
-            Timestamp: timestamp,
-            TransactionType: 'CustomerPayBillOnline',
-            Amount: 1,
-            PartyA: phone,
-            PartyB: SHORT_CODE,
-            PhoneNumber: phone,
-            CallBackURL: CALLBACK_URL,
-            AccountReference: 'SchemeDownload',
-            TransactionDesc: `Payment for ${filename}`
-        }, {
-            headers: { Authorization: `Bearer ${access_token}` }
-        });
+  try {
+    // 1. Get OAuth token
+    const token = await getAccessToken();
 
-        const checkoutId = stkResponse.data.CheckoutRequestID;
-        confirmations.set(checkoutId, false);
-        res.json({ success: true, checkoutId });
-    } catch (err) {
-        console.error('MPESA Error:', err.message);
-        res.status(500).json({ success: false, message: 'Payment failed' });
-    }
+    // 2. Generate timestamp + password
+    const timestamp = moment().format("YYYYMMDDHHmmss");
+    const password = Buffer.from(shortCode + passKey + timestamp).toString("base64");
+
+    // 3. STK Push request
+    const stkRes = await axios.post(
+      "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+      {
+        BusinessShortCode: shortCode,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: "CustomerPayBillOnline",
+        Amount: filePrice, // 💡 file’s money
+        PartyA: phoneNumber,
+        PartyB: shortCode,
+        PhoneNumber: phoneNumber,
+        CallBackURL: "https://your-server.com/api/confirm",
+        AccountReference: fileName, // 💡 file name
+        TransactionDesc: `Payment for ${fileName}`,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("✅ STK Push Response:", stkRes.data);
+    res.json({ success: true, data: stkRes.data });
+  } catch (error) {
+    console.error("❌ Error in STK Push:", error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message,
+    });
+  }
 });
+
 const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton']; // Array of allowed keys
 
 app.post('/api/admin-login', (req, res) => {
@@ -381,3 +407,4 @@ app.post('/api/confirm', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
