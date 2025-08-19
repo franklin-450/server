@@ -12,7 +12,6 @@ const app = express();
 const PORT = 3000;
 
 // === CONFIGURATION ===
-const CALLBACK_URL = 'https://server-1-bmux.onrender.com/api/confirm';
 const ADMIN_API_KEY = 'secret-admin-key';
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -329,7 +328,7 @@ app.post("/api/pay", async (req, res) => {
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "https://your-server.com/api/confirm",
+        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm",
         AccountReference: fileName, // 💡 file name
         TransactionDesc: `Payment for ${fileName}`,
       },
@@ -407,4 +406,5 @@ app.post('/api/confirm', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
