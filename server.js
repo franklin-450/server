@@ -12,7 +12,7 @@ const app = express();
 const PORT = 3000;
 
 // === CONFIGURATION ===
-const ADMIN_API_KEY = 'secret-admin-key';
+const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton']; // admin keys
 
 const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
@@ -25,266 +25,126 @@ app.use(express.static('public'));
 app.use(express.json());
 app.use('/files', express.static(path.join(__dirname, 'uploads')));
 
-
-const ACCESS_FILE = path.join(__dirname, 'access.json');
-
-// ✅ Ensure access.json exists
-async function ensureAccessFile() {
-  try {
-    await fs.access(ACCESS_FILE);
-  } catch (err) {
-    await fs.writeFile(ACCESS_FILE, JSON.stringify({ allowed: [] }, null, 2));
-  }
-}
-
-const accessPath = './access.json';
-
-// Get all access emails
-app.get('/api/access', async (req, res) => {
-  try {
-    const data = await fs.readFile(accessPath, 'utf-8');
-    res.json(JSON.parse(data));
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to read access list' });
-  }
-});
-
-// Add a new email with expiry
-app.post('/api/access', async (req, res) => {
-  const { email, days } = req.body;
-  if (!email || !days) return res.status(400).json({ error: 'Email and days required' });
-
-  const expiry = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-
-  try {
-    let list = [];
-
-    try {
-      const file = await fs.readFile(accessPath, 'utf-8');
-      list = JSON.parse(file);
-    } catch (_) {
-      // file may not exist yet
-      list = [];
-    }
-
-    list = list.filter(item => item.email !== email); // remove duplicates
-    list.push({ email, expiry });
-
-    await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to add email' });
-  }
-});
-
-// Delete email
-app.delete('/api/access/:email', async (req, res) => {
-  const email = decodeURIComponent(req.params.email);
-
-  try {
-    const file = await fs.readFile(accessPath, 'utf-8');
-    let list = JSON.parse(file);
-    list = list.filter(item => item.email !== email);
-    await fs.writeFile(accessPath, JSON.stringify(list, null, 2));
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to delete email' });
-  }
-});
-
-// ✅ Get allowed emails
-async function getAllowedEmails() {
-  try {
-    await ensureAccessFile();
-    const data = await fs.readFile(ACCESS_FILE, 'utf-8');
-    const parsed = JSON.parse(data);
-
-    const now = Date.now();
-
-    // Clean expired users
-    const valid = parsed.filter(entry => new Date(entry.expiry).getTime() > now);
-
-    return valid.map(entry => entry.email.toLowerCase());
-  } catch (err) {
-    console.error('❌ Error reading access.json:', err.message);
-    return [];
-  }
-}
-
-// ✅ Save allowed emails
-async function saveAllowedEmails(emailList) {
-  const now = Date.now();
-  const fiveDaysLater = new Date(now + 5 * 24 * 60 * 60 * 1000).toISOString();
-
-  const data = emailList.map(email => ({
-    email: email.toLowerCase(),
-    expiry: fiveDaysLater
-  }));
-
-  await fs.writeFile(ACCESS_FILE, JSON.stringify(data, null, 2));
-}
-
-// ✅ Grant access
-app.post('/api/grant-access', async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ success: false, message: 'Valid email is required.' });
-    }
-
-    const lowerEmail = email.trim().toLowerCase();
-    const allowed = await getAllowedEmails();
-
-    if (!allowed.includes(lowerEmail)) {
-      allowed.push(lowerEmail);
-      await saveAllowedEmails(allowed);
-      return res.json({ success: true, message: '✅ Access granted.' });
-    } else {
-      return res.json({ success: false, message: 'ℹ️ Email already has access.' });
-    }
-  } catch (err) {
-    console.error('❌ Grant Error:', err.message);
-    res.status(500).json({ success: false, message: 'Server error during access grant.' });
-  }
-});
-
-// ✅ Verify access
-app.post('/api/verify-access', async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ success: false, message: 'Email is required and must be a string.' });
-    }
-
-    const lowerEmail = email.trim().toLowerCase();
-    const allowed = await getAllowedEmails();
-
-    if (allowed.includes(lowerEmail)) {
-      return res.status(200).json({ success: true, message: '✅ Access granted.' });
-    } else {
-      return res.status(403).json({ success: false, message: '🚫 Access denied. Contact admin.' });
-    }
-
-  } catch (error) {
-    console.error('❌ Verify Error:', error.message);
-    res.status(500).json({ success: false, message: 'Server error during access verification.' });
-  }
-});
-
 // ✅ Health check
-app.get('/', (req, res) => {
-  res.send('🎉 Email Access Verification API is running.');
-})
-// ✅ Start server
+app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manager is running.'));
+
+// === STATE ===
 let metadataCache = [];
-const confirmations = new Map(); // Track confirmations
+const confirmations = new Map(); 
+const downloadTokens = new Map();
 
-
+// === INIT ===
 (async () => {
-    try {
-        await fs.mkdir(uploadDir, { recursive: true });
-        if (!(await fileExists(metadataPath))) await fs.writeFile(metadataPath, '[]');
-        if (!(await fileExists(transactionLogPath))) await fs.writeFile(transactionLogPath, '[]');
-        if (!(await fileExists(freeDownloadLogPath))) await fs.writeFile(freeDownloadLogPath, '[]');
-        metadataCache = JSON.parse(await fs.readFile(metadataPath));
-    } catch (e) {
-        console.error('Init error:', e.message);
-    }
+  try {
+    await fs.mkdir(uploadDir, { recursive: true });
+    if (!(await fileExists(metadataPath))) await fs.writeFile(metadataPath, '[]');
+    if (!(await fileExists(transactionLogPath))) await fs.writeFile(transactionLogPath, '[]');
+    if (!(await fileExists(freeDownloadLogPath))) await fs.writeFile(freeDownloadLogPath, '[]');
+    metadataCache = JSON.parse(await fs.readFile(metadataPath));
+  } catch (e) {
+    console.error('Init error:', e.message);
+  }
 })();
 
-const fileExists = async (filePath) => {
-    try {
-        await fs.access(filePath);
-        return true;
-    } catch {
-        return false;
-    }
-};
+async function fileExists(filePath) {
+  try { await fs.access(filePath); return true; } catch { return false; }
+}
 
+// === FILE UPLOAD ===
 const storage = multer.diskStorage({
-    destination: (_, __, cb) => cb(null, uploadDir),
-    filename: (_, file, cb) => {
-        const ext = path.extname(file.originalname);
-        const base = path.basename(file.originalname, ext).replace(/\s+/g, '_');
-        cb(null, `${base}_${Date.now()}${ext}`);
-    }
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const base = path.basename(file.originalname, ext).replace(/\s+/g, '_');
+    cb(null, `${base}_${Date.now()}${ext}`);
+  }
 });
-
 const upload = multer({ storage });
-const generateToken = () => crypto.randomBytes(16).toString('hex');
 
-const downloadTokens = new Map();
+// === TOKEN CLEANUP ===
 setInterval(() => {
-    const now = Date.now();
-    for (const [token, data] of downloadTokens) {
-        if (data.expires < now) downloadTokens.delete(token);
-    }
+  const now = Date.now();
+  for (const [token, data] of downloadTokens) {
+    if (data.expires < now) downloadTokens.delete(token);
+  }
 }, 60000);
 
+// === ROUTES ===
+
+// Upload new file
 app.post('/api/upload', upload.single('file'), async (req, res) => {
-    const { title, subject, class: className, price, type } = req.body;
-    if (!req.file || !title || !subject || !className || !price || !type)
-        return res.status(400).json({ success: false, message: 'Missing fields' });
+  const { title, subject, class: className, price, type, category } = req.body;
+  if (!req.file || !title || !subject || !className || !price || !type || !category) {
+    return res.status(400).json({ success: false, message: 'Missing fields' });
+  }
 
-    const fileInfo = {
-        id: Date.now(),
-        title,
-        subject,
-        class: className,
-        price,
-        type,
-        filename: req.file.filename,
-        mimetype: req.file.mimetype,
-        path: req.file.path,
-        uploadDate: new Date().toISOString()
-    };
+  const fileInfo = {
+    id: Date.now(),
+    title,
+    subject,
+    class: className,
+    category,
+    price,
+    type,
+    filename: req.file.filename,
+    mimetype: req.file.mimetype,
+    path: req.file.path,
+    uploadDate: new Date().toISOString()
+  };
 
-    metadataCache.push(fileInfo);
-    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
-    res.json({ success: true, file: fileInfo });
+  metadataCache.push(fileInfo);
+  await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
+  res.json({ success: true, file: fileInfo });
 });
 
+// List all files
 app.get('/api/files', (_, res) => res.json(metadataCache));
 
+// Download a file with token / admin / free access
 app.get('/api/files/:filename', async (req, res) => {
-    const { filename } = req.params;
-    const { token } = req.query;
-    const fullPath = path.join(uploadDir, filename);
-    const FREE_UNTIL = new Date('2025-07-013T00:00:00+03:00');
-    const now = new Date();
+  const { filename } = req.params;
+  const { token } = req.query;
+  const fullPath = path.join(uploadDir, filename);
+  const FREE_UNTIL = new Date('2025-07-01T00:00:00+03:00');
+  const now = new Date();
 
-    const isAdmin = req.headers.apikey === ADMIN_API_KEY;
-    const validToken = downloadTokens.get(token);
+  const isAdmin = ADMIN_SECRET.includes(req.headers.apikey);
+  const validToken = downloadTokens.get(token);
 
-    if (now <= FREE_UNTIL || isAdmin || (validToken && validToken.filename === filename && validToken.expires >= Date.now())) {
-        try {
-            await fs.access(fullPath);
-            if (validToken) downloadTokens.delete(token);
-            return res.sendFile(fullPath);
-        } catch {
-            return res.status(404).send('File not found');
-        }
-    }
-
-    return res.status(403).send('Access Denied');
-});
-
-app.delete('/api/files/:filename', async (req, res) => {
-    const { filename } = req.params;
-    const fullPath = path.join(uploadDir, filename);
-
+  if (now <= FREE_UNTIL || isAdmin || (validToken && validToken.filename === filename && validToken.expires >= Date.now())) {
     try {
-        await fs.unlink(fullPath);
-        metadataCache = metadataCache.filter(f => f.filename !== filename);
-        await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
-        res.json({ success: true, message: 'File deleted' });
-    } catch (e) {
-        res.status(404).json({ success: false, message: 'File not found' });
+      await fs.access(fullPath);
+      if (validToken) downloadTokens.delete(token);
+      return res.sendFile(fullPath);
+    } catch {
+      return res.status(404).send('File not found');
     }
+  }
+
+  return res.status(403).send('Access Denied');
 });
 
+// Delete file (admin only)
+app.delete('/api/files/:filename', async (req, res) => {
+  const { filename } = req.params;
+  const key = req.headers.apikey;
+
+  if (!ADMIN_SECRET.includes(key)) {
+    return res.status(403).json({ success: false, message: "Unauthorized" });
+  }
+
+  const fullPath = path.join(uploadDir, filename);
+  try {
+    await fs.unlink(fullPath);
+    metadataCache = metadataCache.filter(f => f.filename !== filename);
+    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
+    res.json({ success: true, message: 'File deleted' });
+  } catch (e) {
+    res.status(404).json({ success: false, message: 'File not found' });
+  }
+});
+
+// === M-PESA CONFIG ===
 const consumerkey = "NkxcAadvkohxGErrIm84VAccHA3nfSSRd5DH0mIe9sv9DDCn";
 const consumerSecret = "x636VF0x52vZBorz0Xjunw1dKZjHq7bdCbZnQeYkjemV6eA30qgtk6vylr9DSe8v";
 const shortCode = "174379";
@@ -292,31 +152,22 @@ const passKey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c91
 
 async function getAccessToken() {
   const auth = Buffer.from(`${consumerkey}:${consumerSecret}`).toString("base64");
-  try {
-    const res = await axios.get(
-      "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
-      { headers: { Authorization: `Basic ${auth}` } }
-    );
-    return res.data.access_token;
-  } catch (err) {
-    console.error("Error getting access token:", err.response?.data || err.message);
-    throw err;
-  }
+  const res = await axios.get(
+    "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
+    { headers: { Authorization: `Basic ${auth}` } }
+  );
+  return res.data.access_token;
 }
 
-// 📌 Express route using same logic
+// === STK PUSH ===
 app.post("/api/pay", async (req, res) => {
   const { phoneNumber, fileName, filePrice } = req.body;
 
   try {
-    // 1. Get OAuth token
     const token = await getAccessToken();
-
-    // 2. Generate timestamp + password
     const timestamp = moment().format("YYYYMMDDHHmmss");
     const password = Buffer.from(shortCode + passKey + timestamp).toString("base64");
 
-    // 3. STK Push request
     const stkRes = await axios.post(
       "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
       {
@@ -324,87 +175,87 @@ app.post("/api/pay", async (req, res) => {
         Password: password,
         Timestamp: timestamp,
         TransactionType: "CustomerPayBillOnline",
-        Amount: filePrice, // 💡 file’s money
+        Amount: filePrice,
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm",
-        AccountReference: fileName, // 💡 file name
+        CallBackURL: "https://your-server.com/api/confirm", // ✅ Replace with your domain
+        AccountReference: fileName,
         TransactionDesc: `Payment for ${fileName}`,
       },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
     console.log("✅ STK Push Response:", stkRes.data);
     res.json({ success: true, data: stkRes.data });
   } catch (error) {
     console.error("❌ Error in STK Push:", error.response?.data || error.message);
-    res.status(500).json({
-      success: false,
-      error: error.response?.data || error.message,
-    });
+    res.status(500).json({ success: false, error: error.response?.data || error.message });
   }
 });
 
-const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton']; // Array of allowed keys
+// === CONFIRMATION CALLBACK ===
+app.post('/api/confirm', async (req, res) => {
+  try {
+    const transaction = req.body;
+    console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
 
+    const callback = transaction?.Body?.stkCallback;
+    const checkoutId = callback?.CheckoutRequestID;
+    const status = callback?.ResultCode;
+
+    confirmations.set(checkoutId, status === 0);
+
+    const item = name => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
+
+    const paymentInfo = {
+      id: Date.now(),
+      checkoutId,
+      mpesaReceipt: item('MpesaReceiptNumber'),
+      amount: item('Amount'),
+      phone: item('PhoneNumber'),
+      timestamp: new Date().toISOString(),
+      status: status === 0 ? 'SUCCESS' : 'FAILED'
+    };
+
+    const logs = JSON.parse(await fs.readFile(transactionLogPath));
+    logs.push(paymentInfo);
+    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
+
+    if (status === 0) {
+      const fileName = item('AccountReference');
+      const token = crypto.randomBytes(16).toString('hex');
+      downloadTokens.set(token, { filename: fileName, expires: Date.now() + 60 * 60 * 1000 });
+
+      console.log(`✅ Payment success. Token generated for ${fileName}: ${token}`);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Payment confirmed',
+        token,
+        downloadURL: `/api/files/${fileName}?token=${token}`
+      });
+    }
+
+    res.status(200).json({ success: false, message: 'Payment failed' });
+  } catch (err) {
+    console.error('❌ Error handling /api/confirm:', err);
+    res.status(500).send('Error');
+  }
+});
+
+// === ADMIN LOGIN ===
 app.post('/api/admin-login', (req, res) => {
   const { key } = req.body;
-
-  if (!key) {
-    return res.status(400).json({ success: false, message: "Missing key" });
-  }
-
-  if (ADMIN_SECRET.includes(key)) {
-    return res.json({ success: true });
-  }
-
-  return res.status(401).json({ success: false, message: "Invalid key" });
+  if (ADMIN_SECRET.includes(key)) return res.json({ success: true });
+  res.status(401).json({ success: false, message: "Invalid key" });
 });
 
+// === PAYMENT STATUS ===
 app.get('/api/status/:id', (req, res) => {
-    const status = confirmations.get(req.params.id);
-    res.json({ paid: status || false });
+  const status = confirmations.get(req.params.id);
+  res.json({ paid: status || false });
 });
 
-app.post('/api/confirm', async (req, res) => {
-    try {
-        const transaction = req.body;
-        console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
-
-        const callback = transaction?.Body?.stkCallback;
-        const checkoutId = callback?.CheckoutRequestID;
-        const status = callback?.ResultCode;
-
-        confirmations.set(checkoutId, status === 0);
-
-        const item = name => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
-
-        const paymentInfo = {
-            id: Date.now(),
-            checkoutId,
-            mpesaReceipt: item('MpesaReceiptNumber'),
-            amount: item('Amount'),
-            phone: item('PhoneNumber'),
-            timestamp: new Date().toISOString()
-        };
-
-        const logs = JSON.parse(await fs.readFile(transactionLogPath));
-        logs.push(paymentInfo);
-        await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
-
-        res.status(200).send('Confirmation received');
-    } catch (err) {
-        console.error('❌ Error handling /api/confirm:', err);
-        res.status(500).send('Error');
-    }
-});
-
+// === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
-
-
