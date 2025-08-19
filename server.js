@@ -161,6 +161,7 @@ async function getAccessToken() {
 
 // === STK PUSH ===
 app.post("/api/pay", async (req, res) => {
+  const phone = req.body.phone; // already formatted
   const { phoneNumber, fileName, filePrice } = req.body;
 
   try {
@@ -259,3 +260,4 @@ app.get('/api/status/:id', (req, res) => {
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
