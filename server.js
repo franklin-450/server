@@ -129,7 +129,7 @@ app.delete('/api/files/:filename', async (req, res) => {
   const { filename } = req.params;
   const key = req.headers.apikey;
 
-  if (!ADMIN_SECRET.includes(key)) {
+  if (ADMIN_SECRET.includes(key)) {
     return res.status(403).json({ success: false, message: "Unauthorized" });
   }
 
@@ -260,4 +260,5 @@ app.get('/api/status/:id', (req, res) => {
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
