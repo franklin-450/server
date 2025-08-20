@@ -181,7 +181,7 @@ app.post("/api/pay", async (req, res) => {
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "", // ✅ Replace with your domain
+        CallBackURL: "https://your-server-domain.com/api/confirm", // ✅ Replace with your domain
         AccountReference: fileName,
         TransactionDesc: `Payment for ${fileName}`,
       },
@@ -199,76 +199,106 @@ app.post("/api/pay", async (req, res) => {
 // === CONFIRMATION CALLBACK ===
 app.post('/api/confirm', async (req, res) => {
   try {
-    const transaction = req.body;
-    console.log('📥 M-Pesa Payment Received:', JSON.stringify(transaction, null, 2));
+    const body = req.body;
+    console.log('📥 M-Pesa Callback Received:', JSON.stringify(body, null, 2));
 
-    const callback = transaction?.Body?.stkCallback;
-    const checkoutId = callback?.CheckoutRequestID;
-    const status = callback?.ResultCode;
+    const callback = body?.Body?.stkCallback;
+    if (!callback) {
+      console.error("❌ Invalid callback payload");
+      return res.status(200).json({ ResultCode: 0, ResultDesc: "Invalid payload" });
+    }
+
+    const checkoutId = callback.CheckoutRequestID;
+    const status = callback.ResultCode;
 
     confirmations.set(checkoutId, status === 0);
 
-    const item = name => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
+    // Helper to extract metadata items safely
+    const getItem = (name) =>
+      callback?.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value || null;
 
-const paymentInfo = {
-  id: Date.now(),
-  checkoutId,
-  mpesaReceipt: item('MpesaReceiptNumber'),
-  amount: item('Amount'),
-  phone: item('PhoneNumber'),
-  filename: item('AccountReference'),   // ✅ Store filename
-  timestamp: new Date().toISOString(),
-  status: status === 0 ? 'SUCCESS' : 'FAILED'
-};
+    const paymentInfo = {
+      id: Date.now(),
+      checkoutId,
+      mpesaReceipt: getItem('MpesaReceiptNumber'),
+      amount: getItem('Amount'),
+      phone: getItem('PhoneNumber'),
+      filename: getItem('AccountReference') || "UNKNOWN", // 👈 comes from your /api/pay
+      timestamp: new Date().toISOString(),
+      status: status === 0 ? 'SUCCESS' : 'FAILED'
+    };
 
-
-    const logs = JSON.parse(await fs.readFile(transactionLogPath));
+    // Save to logs
+    let logs = [];
+    try {
+      logs = JSON.parse(await fs.readFile(transactionLogPath));
+    } catch (e) {
+      console.warn("⚠️ No transaction log found, creating new one");
+    }
     logs.push(paymentInfo);
     await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
 
+    // Generate download token if success
     if (status === 0) {
-      const fileName = item('AccountReference');
       const token = crypto.randomBytes(16).toString('hex');
-      downloadTokens.set(token, { filename: fileName, expires: Date.now() + 60 * 60 * 1000 });
-
-      console.log(`✅ Payment success. Token generated for ${fileName}: ${token}`);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Payment confirmed',
-        token,
-        downloadURL: `/api/files/${fileName}?token=${token}`
+      downloadTokens.set(token, {
+        filename: paymentInfo.filename,
+        expires: Date.now() + 60 * 60 * 1000, // 1h expiry
       });
+
+      console.log(`✅ Payment success. File: ${paymentInfo.filename}, Token: ${token}`);
+    } else {
+      console.log(`❌ Payment failed: ${callback.ResultDesc}`);
     }
 
-    res.status(200).json({ success: false, message: 'Payment failed' });
+    // ✅ Always respond 200 with ResultCode:0
+    return res.status(200).json({
+      ResultCode: 0,
+      ResultDesc: "Accepted"
+    });
+
   } catch (err) {
     console.error('❌ Error handling /api/confirm:', err);
-    res.status(500).send('Error');
+
+    // ✅ Still respond 200 so Safaricom stops retrying
+    res.status(200).json({
+      ResultCode: 0,
+      ResultDesc: "Accepted with error"
+    });
   }
 });
-// For frontend polling
+
+
+// === POLLING FOR FRONTEND ===
 app.get("/api/confirm", async (req, res) => {
   try {
-    const filename = req.query.filename;
+    const { filename } = req.query;
     if (!filename) {
       return res.status(400).json({ confirmed: false, message: "Filename required" });
     }
 
     const logs = JSON.parse(await fs.readFile(transactionLogPath));
-    const tx = logs.find(l => l.status === "SUCCESS" && l.checkoutId && l.mpesaReceipt && l.amount && l.filename === filename);
+    const tx = logs.find(
+      (l) =>
+        l.status === "SUCCESS" &&
+        l.filename === filename &&
+        l.checkoutId &&
+        l.mpesaReceipt
+    );
 
     if (tx) {
       // find active token for that file
-      const entry = [...downloadTokens.entries()].find(([token, obj]) =>
-        obj.filename === filename && obj.expires > Date.now()
+      const entry = [...downloadTokens.entries()].find(
+        ([, obj]) => obj.filename === filename && obj.expires > Date.now()
       );
 
       if (entry) {
         return res.json({
           confirmed: true,
           token: entry[0],
-          mpesaReceipt: tx.mpesaReceipt
+          mpesaReceipt: tx.mpesaReceipt,
+          amount: tx.amount,
+          phone: tx.phone,
         });
       }
     }
@@ -279,7 +309,6 @@ app.get("/api/confirm", async (req, res) => {
     res.status(500).json({ confirmed: false, error: "Server error" });
   }
 });
-
 
 // === ADMIN LOGIN ===
 app.post('/api/admin-login', (req, res) => {
@@ -378,6 +407,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
