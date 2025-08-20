@@ -313,10 +313,13 @@ router.get('/api/transactions', async (req, res) => {
 });
 
 module.exports = router;
+// Mount the router so /api/transactions works
+app.use('/', router);
 
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
