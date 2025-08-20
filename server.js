@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const moment = require("moment");
+const router = express.Router();
 
 const app = express();
 const PORT = 3000;
@@ -258,7 +259,64 @@ app.get('/api/status/:id', (req, res) => {
   res.json({ paid: status || false });
 });
 
+const transactionsFile = path.join(__dirname, 'transactions.json');
+
+// Utility to read transactions
+async function readTransactions() {
+  try {
+    const raw = await fs.readFile(transactionsFile, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    return [];
+  }
+}
+
+// Utility to write transactions
+async function writeTransactions(transactions) {
+  await fs.writeFile(transactionsFile, JSON.stringify(transactions, null, 2));
+}
+
+// POST: log a transaction
+router.post('/api/transactions', async (req, res) => {
+  const { filename, token, phoneNumber, filePrice, mpesaTransactionID } = req.body;
+  if (!filename || !token || !phoneNumber || !filePrice || !mpesaTransactionID) {
+    return res.status(400).json({ success: false, message: 'Missing fields' });
+  }
+
+  try {
+    const transactions = await readTransactions();
+    transactions.push({
+      filename,
+      token,
+      phoneNumber,
+      filePrice,
+      mpesaTransactionID,
+      date: new Date().toISOString()
+    });
+    await writeTransactions(transactions);
+    res.json({ success: true, message: 'Transaction logged' });
+  } catch (err) {
+    console.error('Transaction API error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET: fetch all transactions
+router.get('/api/transactions', async (req, res) => {
+  try {
+    const transactions = await readTransactions();
+    res.json(transactions);
+  } catch (err) {
+    console.error('Transaction API fetch error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+module.exports = router;
+
+
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
