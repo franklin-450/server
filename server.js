@@ -259,66 +259,91 @@ app.get('/api/status/:id', (req, res) => {
   res.json({ paid: status || false });
 });
 
-const transactionsFile = path.join(__dirname, 'transactions.json');
+const TRANSACTION_FILE = path.join(__dirname, "transactions.json");
 
-// Utility to read transactions
+// ✅ Utility function: read transactions
 async function readTransactions() {
   try {
-    const raw = await fs.readFile(transactionsFile, 'utf8');
-    return JSON.parse(raw);
+    const data = await fs.readFile(TRANSACTION_FILE, "utf8");
+    return JSON.parse(data);
   } catch (err) {
-    return [];
+    if (err.code === "ENOENT") return []; // file not found → start empty
+    throw err;
   }
 }
 
-// Utility to write transactions
+// ✅ Utility function: write transactions
 async function writeTransactions(transactions) {
-  await fs.writeFile(transactionsFile, JSON.stringify(transactions, null, 2));
+  await fs.writeFile(TRANSACTION_FILE, JSON.stringify(transactions, null, 2));
 }
 
-// POST: log a transaction
-router.post('/api/transactions', async (req, res) => {
-  const { filename, token, phoneNumber, filePrice, mpesaTransactionID } = req.body;
-  if (!filename || !token || !phoneNumber || !filePrice || !mpesaTransactionID) {
-    return res.status(400).json({ success: false, message: 'Missing fields' });
-  }
-
+// 📌 API: log a transaction
+router.post("/api/transactions", async (req, res) => {
   try {
+    const { mpesaReceipt, phone, amount, filename } = req.body;
+
+    if (!mpesaReceipt || !phone || !amount || !filename) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
     const transactions = await readTransactions();
-    transactions.push({
+
+    const newTx = {
+      id: mpesaReceipt, // M-Pesa receipt number as unique id
+      phone,
+      amount,
       filename,
-      token,
-      phoneNumber,
-      filePrice,
-      mpesaTransactionID,
-      date: new Date().toISOString()
-    });
+      date: new Date().toISOString(),
+    };
+
+    transactions.push(newTx);
     await writeTransactions(transactions);
-    res.json({ success: true, message: 'Transaction logged' });
+
+    res.json({ success: true, transaction: newTx });
   } catch (err) {
-    console.error('Transaction API error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error("Error saving transaction:", err);
+    res.status(500).json({ error: "Failed to save transaction" });
   }
 });
 
-// GET: fetch all transactions
-router.get('/api/transactions', async (req, res) => {
+// 📌 API: get all transactions
+router.get("/api/transactions", async (req, res) => {
   try {
     const transactions = await readTransactions();
     res.json(transactions);
   } catch (err) {
-    console.error('Transaction API fetch error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error("Error reading transactions:", err);
+    res.status(500).json({ error: "Failed to read transactions" });
+  }
+});
+
+// 📌 API: get single transaction by receipt id
+router.get("/api/transactions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const transactions = await readTransactions();
+    const tx = transactions.find((t) => t.id === id);
+
+    if (!tx) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+
+    res.json(tx);
+  } catch (err) {
+    console.error("Error fetching transaction:", err);
+    res.status(500).json({ error: "Failed to fetch transaction" });
   }
 });
 
 module.exports = router;
+
 // Mount the router so /api/transactions works
 app.use('/', router);
 
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
