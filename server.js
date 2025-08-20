@@ -210,15 +210,17 @@ app.post('/api/confirm', async (req, res) => {
 
     const item = name => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || 'N/A';
 
-    const paymentInfo = {
-      id: Date.now(),
-      checkoutId,
-      mpesaReceipt: item('MpesaReceiptNumber'),
-      amount: item('Amount'),
-      phone: item('PhoneNumber'),
-      timestamp: new Date().toISOString(),
-      status: status === 0 ? 'SUCCESS' : 'FAILED'
-    };
+const paymentInfo = {
+  id: Date.now(),
+  checkoutId,
+  mpesaReceipt: item('MpesaReceiptNumber'),
+  amount: item('Amount'),
+  phone: item('PhoneNumber'),
+  filename: item('AccountReference'),   // ✅ Store filename
+  timestamp: new Date().toISOString(),
+  status: status === 0 ? 'SUCCESS' : 'FAILED'
+};
+
 
     const logs = JSON.parse(await fs.readFile(transactionLogPath));
     logs.push(paymentInfo);
@@ -245,6 +247,39 @@ app.post('/api/confirm', async (req, res) => {
     res.status(500).send('Error');
   }
 });
+// For frontend polling
+app.get("/api/confirm", async (req, res) => {
+  try {
+    const filename = req.query.filename;
+    if (!filename) {
+      return res.status(400).json({ confirmed: false, message: "Filename required" });
+    }
+
+    const logs = JSON.parse(await fs.readFile(transactionLogPath));
+    const tx = logs.find(l => l.status === "SUCCESS" && l.checkoutId && l.mpesaReceipt && l.amount && l.filename === filename);
+
+    if (tx) {
+      // find active token for that file
+      const entry = [...downloadTokens.entries()].find(([token, obj]) =>
+        obj.filename === filename && obj.expires > Date.now()
+      );
+
+      if (entry) {
+        return res.json({
+          confirmed: true,
+          token: entry[0],
+          mpesaReceipt: tx.mpesaReceipt
+        });
+      }
+    }
+
+    res.json({ confirmed: false });
+  } catch (err) {
+    console.error("❌ Error in /api/confirm (GET):", err);
+    res.status(500).json({ confirmed: false, error: "Server error" });
+  }
+});
+
 
 // === ADMIN LOGIN ===
 app.post('/api/admin-login', (req, res) => {
@@ -343,6 +378,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
