@@ -181,7 +181,7 @@ app.post("/api/pay", async (req, res) => {
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm", // ✅ Replace with your domain
+        CallBackURL: "", // ✅ Replace with your domain
         AccountReference: fileName,
         TransactionDesc: `Payment for ${fileName}`,
       },
@@ -378,6 +378,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
