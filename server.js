@@ -19,7 +19,6 @@ const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
 const transactionLogPath = "./transactions.json";
 const tokensPath = "./tokens.json";
-const downloadTokens = new Map(); // token -> { filename, expires }
 const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
 app.use(cors());
@@ -427,6 +426,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
