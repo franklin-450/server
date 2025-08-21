@@ -82,7 +82,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   if (!req.file || !title || !subject || !className || !price || !type || !category) {
     return res.status(400).json({ success: false, message: 'Missing fields' });
   }
-
+  const fileUrl = `/uploads/${req.file.filename}`;
   const fileInfo = {
     id: Date.now(),
     title,
@@ -93,7 +93,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     type,
     filename: req.file.filename,
     mimetype: req.file.mimetype,
-    path: req.file.path,
+    path: fileUrl,
     uploadDate: new Date().toISOString()
   };
 
@@ -541,3 +541,4 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
