@@ -18,6 +18,7 @@ const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'kl
 const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
 const transactionLogPath = path.join(__dirname, 'transactions.json');
+const tokensPath = path.join(__dirname, 'tokens.json');
 const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
 app.use(cors());
@@ -199,7 +200,26 @@ app.post("/api/pay", async (req, res) => {
   }
 });
 
-// === CONFIRMATION CALLBACK ===
+
+// Load tokens on server start
+let downloadTokens = new Map();
+(async () => {
+  try {
+    const saved = JSON.parse(await fs.readFile(tokensPath));
+    for (const [k, v] of Object.entries(saved)) downloadTokens.set(k, v);
+    console.log(`✅ Loaded ${downloadTokens.size} tokens from disk`);
+  } catch (e) {
+    console.log("⚠️ No saved tokens found, starting fresh");
+  }
+})();
+
+// Helper: persist tokens to disk
+async function saveTokens() {
+  const obj = Object.fromEntries(downloadTokens);
+  await fs.writeFile(tokensPath, JSON.stringify(obj, null, 2));
+}
+
+// POST /api/confirm - M-Pesa Callback
 app.post('/api/confirm', async (req, res) => {
   try {
     const body = req.body;
@@ -214,9 +234,7 @@ app.post('/api/confirm', async (req, res) => {
     const checkoutId = callback.CheckoutRequestID;
     const status = callback.ResultCode;
 
-    confirmations.set(checkoutId, status === 0);
-
-    // Helper to extract metadata items safely
+    // Helper to extract metadata safely
     const getItem = (name) =>
       callback?.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value || null;
 
@@ -226,12 +244,12 @@ app.post('/api/confirm', async (req, res) => {
       mpesaReceipt: getItem('MpesaReceiptNumber'),
       amount: getItem('Amount'),
       phone: getItem('PhoneNumber'),
-      filename: getItem('AccountReference') || "UNKNOWN", // 👈 comes from your /api/pay
+      filename: getItem('AccountReference') || "UNKNOWN",
       timestamp: new Date().toISOString(),
       status: status === 0 ? 'SUCCESS' : 'FAILED'
     };
 
-    // Save to logs
+    // Save transaction log
     let logs = [];
     try {
       logs = JSON.parse(await fs.readFile(transactionLogPath));
@@ -241,67 +259,52 @@ app.post('/api/confirm', async (req, res) => {
     logs.push(paymentInfo);
     await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
 
-    // Generate download token if success
+    // Generate download token if successful
     if (status === 0) {
       const token = crypto.randomBytes(16).toString('hex');
       downloadTokens.set(token, {
         filename: paymentInfo.filename,
-        expires: Date.now() + 60 * 60 * 1000, // 1h expiry
+        expires: Date.now() + 60 * 60 * 1000 // 1 hour
       });
-
+      await saveTokens();
       console.log(`✅ Payment success. File: ${paymentInfo.filename}, Token: ${token}`);
     } else {
       console.log(`❌ Payment failed: ${callback.ResultDesc}`);
     }
 
-    // ✅ Always respond 200 with ResultCode:0
-    return res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: "Accepted"
-    });
+    return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   } catch (err) {
     console.error('❌ Error handling /api/confirm:', err);
-
-    // ✅ Still respond 200 so Safaricom stops retrying
-    res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: "Accepted with error"
-    });
+    return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted with error" });
   }
 });
 
-
-// === POLLING FOR FRONTEND ===
-app.get("/api/confirm", async (req, res) => {
+// GET /api/confirm - Frontend Polling
+app.get('/api/confirm', async (req, res) => {
   try {
     const { filename } = req.query;
-    if (!filename) {
-      return res.status(400).json({ confirmed: false, message: "Filename required" });
-    }
+    if (!filename) return res.status(400).json({ confirmed: false, message: "Filename required" });
 
     const logs = JSON.parse(await fs.readFile(transactionLogPath));
-    const tx = logs.find(
-      (l) =>
-        l.status === "SUCCESS" &&
-        l.filename === filename &&
-        l.checkoutId &&
-        l.mpesaReceipt
-    );
+    const tx = logs.find(l => l.status === "SUCCESS" && l.filename === filename);
 
     if (tx) {
-      // find active token for that file
-      const entry = [...downloadTokens.entries()].find(
-        ([, obj]) => obj.filename === filename && obj.expires > Date.now()
-      );
+      // Cleanup expired tokens
+      const now = Date.now();
+      for (const [k, v] of downloadTokens) {
+        if (v.expires <= now) downloadTokens.delete(k);
+      }
 
+      // Find active token
+      const entry = [...downloadTokens.entries()].find(([_, obj]) => obj.filename === filename && obj.expires > now);
       if (entry) {
         return res.json({
           confirmed: true,
           token: entry[0],
           mpesaReceipt: tx.mpesaReceipt,
           amount: tx.amount,
-          phone: tx.phone,
+          phone: tx.phone
         });
       }
     }
@@ -312,6 +315,21 @@ app.get("/api/confirm", async (req, res) => {
     res.status(500).json({ confirmed: false, error: "Server error" });
   }
 });
+
+// Optional: cleanup expired tokens every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const [k, v] of downloadTokens) {
+    if (v.expires <= now) {
+      downloadTokens.delete(k);
+      changed = true;
+    }
+  }
+  if (changed) saveTokens().catch(console.error);
+}, 10 * 60 * 1000);
+
+module.exports = app;
 
 // === ADMIN LOGIN ===
 app.post('/api/admin-login', (req, res) => {
@@ -410,6 +428,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
