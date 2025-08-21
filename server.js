@@ -18,6 +18,7 @@ const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'kl
 const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
 const transactionLogPath = "./transactions.json";
+const transactionsPath = path.join(__dirname, "transactions.json");
 const tokensPath = "./tokens.json";
 const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
@@ -340,7 +341,8 @@ app.get("/download", async (req, res) => {
       return res.status(403).send("Invalid or expired token");
     }
 
-    const filePath = path.join(filesDir, entry.filename);
+    const filePath = path.join(__dirname, "uploads", file.fileName);
+
 
     return res.download(filePath, entry.filename, (err) => {
       if (err) {
@@ -381,6 +383,73 @@ app.post('/api/admin-login', (req, res) => {
   if (ADMIN_SECRET.includes(key)) return res.json({ success: true });
   res.status(401).json({ success: false, message: "Invalid key" });
 });
+app.get("/api/admin/transactions", (req, res) => {
+  const fs = require("fs");
+  const path = require("path");
+
+  try {
+    // Load transactions + metadata
+
+    const transactions = JSON.parse(fs.readFileSync(transactionsPath, "utf-8"));
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8"));
+
+    // Revenue counters
+    let revenue = { today: 0, week: 0, month: 0, year: 0, total: 0 };
+
+    // Downloads counter per file
+    let downloadsMap = {};
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday = start
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+    // Process transactions
+    transactions.forEach((t) => {
+      const amount = parseFloat(t.amount || 0);
+      const createdAt = new Date(t.date || t.timestamp || now);
+
+      // Revenue by period
+      if (createdAt >= startOfToday) revenue.today += amount;
+      if (createdAt >= startOfWeek) revenue.week += amount;
+      if (createdAt >= startOfMonth) revenue.month += amount;
+      if (createdAt >= startOfYear) revenue.year += amount;
+      revenue.total += amount;
+
+      // Downloads tracking
+      if (t.fileId) {
+        downloadsMap[t.fileId] = (downloadsMap[t.fileId] || 0) + 1;
+      }
+    });
+
+    // Map file IDs to actual filenames from metadata.json
+    let highestDownloads = Object.entries(downloadsMap)
+      .map(([fileId, count]) => {
+        const fileMeta = metadata.find((m) => m.id == fileId) || {};
+        return {
+          fileId,
+          filename: fileMeta.filename || "Unknown",
+          count,
+        };
+      })
+      .sort((a, b) => b.count - a.count) // highest first
+      .slice(0, 10); // top 10
+
+    res.json({
+      revenue,
+      highestDownloads,
+      totalTransactions: transactions.length,
+      transactions, // optional: full list
+    });
+
+  } catch (err) {
+    console.error("Error reading transactions:", err);
+    res.status(500).json({ error: "Failed to load admin stats" });
+  }
+});
+
 
 // === PAYMENT STATUS ===
 app.get('/api/status/:id', (req, res) => {
@@ -472,27 +541,3 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
