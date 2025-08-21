@@ -278,33 +278,43 @@ app.post("/api/confirm", async (req, res) => {
 });
 
 // === POLLING FOR FRONTEND ===
-app.get("/api/confirm", async (req, res) => {
+// === GET /api/confirm - Frontend Polling + Token for Download ===
+app.get('/api/confirm', async (req, res) => {
   try {
     const { filename } = req.query;
     if (!filename) return res.status(400).json({ confirmed: false, message: "Filename required" });
 
-    const logsRaw = await fs.readFile(transactionLogPath).catch(() => "[]");
-    const logs = JSON.parse(logsRaw);
+    // Load transaction logs
+    const logs = JSON.parse(await fs.readFile(transactionLogPath));
+    const tx = logs.find(l => l.status === "SUCCESS" && l.filename === filename);
 
-    const tx = logs.find((l) => l.status === "SUCCESS" && l.filename === filename);
     if (tx) {
-      // Cleanup expired tokens
       const now = Date.now();
-      for (const [k, v] of downloadTokens) if (v.expires <= now) downloadTokens.delete(k);
 
-      const entry = [...downloadTokens.entries()].find(
-        ([_, obj]) => obj.filename === filename && obj.expires > now
-      );
-
-      if (entry) {
-        return res.json({
-          confirmed: true,
-          token: entry[0],
-          mpesaReceipt: tx.mpesaReceipt,
-          amount: tx.amount,
-          phone: tx.phone
-        });
+      // Cleanup expired tokens
+      for (const [k, v] of downloadTokens) {
+        if (v.expires <= now) downloadTokens.delete(k);
       }
+
+      // Find or create active token for this file
+      let entry = [...downloadTokens.entries()].find(([_, obj]) => obj.filename === filename && obj.expires > now);
+      if (!entry) {
+        const token = crypto.randomBytes(16).toString('hex');
+        downloadTokens.set(token, {
+          filename,
+          expires: now + 60 * 60 * 1000 // 1 hour
+        });
+        await saveTokens();
+        entry = [token, downloadTokens.get(token)];
+      }
+
+      return res.json({
+        confirmed: true,
+        token: entry[0],
+        mpesaReceipt: tx.mpesaReceipt,
+        amount: tx.amount,
+        phone: tx.phone
+      });
     }
 
     res.json({ confirmed: false });
@@ -313,6 +323,37 @@ app.get("/api/confirm", async (req, res) => {
     res.status(500).json({ confirmed: false, error: "Server error" });
   }
 });
+
+// === DOWNLOAD BY TOKEN ===
+app.get("/download", async (req, res) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.status(400).send("Token required");
+
+    const entry = downloadTokens.get(token);
+    if (!entry || entry.expires < Date.now()) {
+      return res.status(403).send("Invalid or expired token");
+    }
+
+    const filePath = path.join(filesDir, entry.filename);
+
+    return res.download(filePath, entry.filename, (err) => {
+      if (err) {
+        console.error("❌ Error serving file:", err);
+        res.status(500).send("Error downloading file");
+      } else {
+        console.log(`✅ File downloaded: ${entry.filename}`);
+        // Optionally invalidate token after first download
+        downloadTokens.delete(token);
+        saveTokens().catch(console.error);
+      }
+    });
+  } catch (err) {
+    console.error("❌ Error in /download:", err);
+    res.status(500).send("Server error");
+  }
+});
+
 
 // === CLEANUP TOKENS PERIODICALLY ===
 setInterval(() => {
@@ -426,6 +467,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
