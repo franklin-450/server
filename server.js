@@ -17,8 +17,9 @@ const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'kl
 
 const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
-const transactionLogPath = path.join(__dirname, 'transactions.json');
-const tokensPath = path.join(__dirname, 'tokens.json');
+const transactionLogPath = "./transactions.json";
+const tokensPath = "./tokens.json";
+const downloadTokens = new Map(); // token -> { filename, expires }
 const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
 app.use(cors());
@@ -163,8 +164,12 @@ async function getAccessToken() {
 
 // === STK PUSH ===
 app.post("/api/pay", async (req, res) => {
-  const phone = req.body.phone; // already formatted
   const { phoneNumber, fileName, filePrice } = req.body;
+
+  // Sanitize filename
+  const sanitizedFileName = fileName
+    ? fileName.replace(/[^\w.-]/g, "_").trim()
+    : "UNKNOWN";
 
   try {
     const token = await getAccessToken();
@@ -182,9 +187,9 @@ app.post("/api/pay", async (req, res) => {
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm", // replace with your domain
-        AccountReference: fileName, // ✅ must match sanitized frontend filename
-        TransactionDesc: `Purchase ${fileName}`
+        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm",
+        AccountReference: sanitizedFileName,
+        TransactionDesc: `Purchase ${sanitizedFileName}`
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
@@ -197,8 +202,7 @@ app.post("/api/pay", async (req, res) => {
   }
 });
 
-
-// Load tokens on server start
+// === LOAD TOKENS ON SERVER START ===
 (async () => {
   try {
     const saved = JSON.parse(await fs.readFile(tokensPath));
@@ -209,17 +213,17 @@ app.post("/api/pay", async (req, res) => {
   }
 })();
 
-// Helper: persist tokens to disk
+// === SAVE TOKENS ===
 async function saveTokens() {
   const obj = Object.fromEntries(downloadTokens);
   await fs.writeFile(tokensPath, JSON.stringify(obj, null, 2));
 }
 
-// POST /api/confirm - M-Pesa Callback
-app.post('/api/confirm', async (req, res) => {
+// === CONFIRMATION CALLBACK ===
+app.post("/api/confirm", async (req, res) => {
   try {
     const body = req.body;
-    console.log('📥 M-Pesa Callback Received:', JSON.stringify(body, null, 2));
+    console.log("📥 M-Pesa Callback Received:", JSON.stringify(body, null, 2));
 
     const callback = body?.Body?.stkCallback;
     if (!callback) {
@@ -230,19 +234,18 @@ app.post('/api/confirm', async (req, res) => {
     const checkoutId = callback.CheckoutRequestID;
     const status = callback.ResultCode;
 
-    // Helper to extract metadata safely
     const getItem = (name) =>
       callback?.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value || null;
 
     const paymentInfo = {
       id: Date.now(),
       checkoutId,
-      mpesaReceipt: getItem('MpesaReceiptNumber'),
-      amount: getItem('Amount'),
-      phone: getItem('PhoneNumber'),
-      filename: getItem('AccountReference') || body.fileName || "UNKNOWN",
+      mpesaReceipt: getItem("MpesaReceiptNumber"),
+      amount: getItem("Amount"),
+      phone: getItem("PhoneNumber"),
+      filename: getItem("AccountReference") || body.fileName || "UNKNOWN",
       timestamp: new Date().toISOString(),
-      status: status === 0 ? 'SUCCESS' : 'FAILED'
+      status: status === 0 ? "SUCCESS" : "FAILED"
     };
 
     // Save transaction log
@@ -255,12 +258,12 @@ app.post('/api/confirm', async (req, res) => {
     logs.push(paymentInfo);
     await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
 
-    // Generate download token if successful
+    // Generate token if successful
     if (status === 0) {
-      const token = crypto.randomBytes(16).toString('hex');
+      const token = crypto.randomBytes(16).toString("hex");
       downloadTokens.set(token, {
         filename: paymentInfo.filename,
-        expires: Date.now() + 60 * 60 * 1000 // 1 hour
+        expires: Date.now() + 60 * 60 * 1000
       });
       await saveTokens();
       console.log(`✅ Payment success. File: ${paymentInfo.filename}, Token: ${token}`);
@@ -269,31 +272,31 @@ app.post('/api/confirm', async (req, res) => {
     }
 
     return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
-
   } catch (err) {
-    console.error('❌ Error handling /api/confirm:', err);
+    console.error("❌ Error handling /api/confirm:", err);
     return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted with error" });
   }
 });
 
-// GET /api/confirm - Frontend Polling
-app.get('/api/confirm', async (req, res) => {
+// === POLLING FOR FRONTEND ===
+app.get("/api/confirm", async (req, res) => {
   try {
     const { filename } = req.query;
     if (!filename) return res.status(400).json({ confirmed: false, message: "Filename required" });
 
-    const logs = JSON.parse(await fs.readFile(transactionLogPath));
-    const tx = logs.find(l => l.status === "SUCCESS" && l.filename === filename);
+    const logsRaw = await fs.readFile(transactionLogPath).catch(() => "[]");
+    const logs = JSON.parse(logsRaw);
 
+    const tx = logs.find((l) => l.status === "SUCCESS" && l.filename === filename);
     if (tx) {
       // Cleanup expired tokens
       const now = Date.now();
-      for (const [k, v] of downloadTokens) {
-        if (v.expires <= now) downloadTokens.delete(k);
-      }
+      for (const [k, v] of downloadTokens) if (v.expires <= now) downloadTokens.delete(k);
 
-      // Find active token
-      const entry = [...downloadTokens.entries()].find(([_, obj]) => obj.filename === filename && obj.expires > now);
+      const entry = [...downloadTokens.entries()].find(
+        ([_, obj]) => obj.filename === filename && obj.expires > now
+      );
+
       if (entry) {
         return res.json({
           confirmed: true,
@@ -312,7 +315,7 @@ app.get('/api/confirm', async (req, res) => {
   }
 });
 
-// Optional: cleanup expired tokens every 10 minutes
+// === CLEANUP TOKENS PERIODICALLY ===
 setInterval(() => {
   const now = Date.now();
   let changed = false;
@@ -424,6 +427,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
