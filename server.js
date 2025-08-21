@@ -34,6 +34,7 @@ app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manage
 let metadataCache = [];
 const confirmations = new Map(); 
 const downloadTokens = new Map();
+const checkoutFileMap = new Map();
 
 // === INIT ===
 (async () => {
@@ -192,7 +193,8 @@ app.post("/api/pay", async (req, res) => {
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
-
+    checkoutFileMap.set(stkRes.data.CheckoutRequestID, sanitizedFilename);
+    
     console.log("✅ STK Push Response:", stkRes.data);
     res.json({ success: true, data: stkRes.data });
   } catch (error) {
@@ -235,17 +237,19 @@ app.post("/api/confirm", async (req, res) => {
 
     const getItem = (name) =>
       callback?.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value || null;
+// Use the mapped filename if AccountReference is missing
+const filename = getItem('AccountReference') || checkoutFileMap.get(checkoutId) || "UNKNOWN";
 
-    const paymentInfo = {
-      id: Date.now(),
-      checkoutId,
-      mpesaReceipt: getItem("MpesaReceiptNumber"),
-      amount: getItem("Amount"),
-      phone: getItem("PhoneNumber"),
-      filename: getItem('AccountReference') || callback?.AccountReference || "UNKNOWN",
-      timestamp: new Date().toISOString(),
-      status: status === 0 ? "SUCCESS" : "FAILED"
-    };
+const paymentInfo = {
+  id: Date.now(),
+  checkoutId,
+  mpesaReceipt: getItem('MpesaReceiptNumber'),
+  amount: getItem('Amount'),
+  phone: getItem('PhoneNumber'),
+  filename, // now guaranteed to have the correct file
+  timestamp: new Date().toISOString(),
+  status: status === 0 ? 'SUCCESS' : 'FAILED'
+};
 
     // Save transaction log
     let logs = [];
@@ -467,6 +471,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
