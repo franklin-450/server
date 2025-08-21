@@ -102,29 +102,29 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 // List all files
 app.get('/api/files', (_, res) => res.json(metadataCache));
 
-// Download a file with token / admin / free access
 app.get('/api/files/:filename', async (req, res) => {
-  const { filename } = req.params;
-  const { token } = req.query;
-  const fullPath = path.join(uploadDir, filename);
-  const FREE_UNTIL = new Date('2025-07-01T00:00:00+03:00');
-  const now = new Date();
+  try {
+    const { filename } = req.params;
+    const { token } = req.query;
 
-  const isAdmin = ADMIN_SECRET.includes(req.headers.apikey);
-  const validToken = downloadTokens.get(token);
-
-  if (now <= FREE_UNTIL || isAdmin || (validToken && validToken.filename === filename && validToken.expires >= Date.now())) {
-    try {
-      await fs.access(fullPath);
-      if (validToken) downloadTokens.delete(token);
-      return res.sendFile(fullPath);
-    } catch {
-      return res.status(404).send('File not found');
+    // Check token
+    const entry = downloadTokens.get(token);
+    if (!entry || entry.expires < Date.now() || entry.filename !== filename) {
+      return res.status(403).send('❌ Invalid or expired token');
     }
-  }
 
-  return res.status(403).send('Access Denied');
-});
+    // File path (adjust as needed)
+    const filePath = path.join(__dirname, 'files', filename);
+
+    // Send file
+    res.download(filePath, filename, (err) => {
+      if (err) console.error('❌ Error sending file:', err);
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/files:', err);
+    res.status(500).send('Server error');
+  }
+  });
 
 // Delete file (admin only)
 app.delete('/api/files/:filename', async (req, res) => {
@@ -467,6 +467,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
