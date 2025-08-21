@@ -171,9 +171,6 @@ app.post("/api/pay", async (req, res) => {
     const timestamp = moment().format("YYYYMMDDHHmmss");
     const password = Buffer.from(shortCode + passKey + timestamp).toString("base64");
 
-    const safeFileName = fileName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 20);
-    const safeTransactionDesc = `Payment_for_${safeFileName}`;
-
     const stkRes = await axios.post(
       "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
       {
@@ -186,8 +183,8 @@ app.post("/api/pay", async (req, res) => {
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
         CallBackURL: "https://server-1-bmux.onrender.com/api/confirm", // replace with your domain
-        AccountReference: safeFileName,
-        TransactionDesc: safeTransactionDesc,
+        AccountReference: fileName, // ✅ must match sanitized frontend filename
+        TransactionDesc: `Purchase ${fileName}`
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
@@ -243,7 +240,7 @@ app.post('/api/confirm', async (req, res) => {
       mpesaReceipt: getItem('MpesaReceiptNumber'),
       amount: getItem('Amount'),
       phone: getItem('PhoneNumber'),
-      filename: getItem('AccountReference') || "UNKNOWN",
+      filename: getItem('AccountReference') || body.fileName || "UNKNOWN"
       timestamp: new Date().toISOString(),
       status: status === 0 ? 'SUCCESS' : 'FAILED'
     };
@@ -427,6 +424,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
