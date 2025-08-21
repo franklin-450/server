@@ -170,6 +170,9 @@ app.post("/api/pay", async (req, res) => {
     const timestamp = moment().format("YYYYMMDDHHmmss");
     const password = Buffer.from(shortCode + passKey + timestamp).toString("base64");
 
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 20);
+    const safeTransactionDesc = `Payment_for_${safeFileName}`;
+
     const stkRes = await axios.post(
       "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
       {
@@ -181,9 +184,9 @@ app.post("/api/pay", async (req, res) => {
         PartyA: phoneNumber,
         PartyB: shortCode,
         PhoneNumber: phoneNumber,
-        CallBackURL: "https://your-server-domain.com/api/confirm", // ✅ Replace with your domain
-        AccountReference: fileName,
-        TransactionDesc: `Payment for ${fileName}`,
+        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm", // replace with your domain
+        AccountReference: safeFileName,
+        TransactionDesc: safeTransactionDesc,
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
@@ -407,6 +410,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
