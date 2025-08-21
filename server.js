@@ -202,7 +202,6 @@ app.post("/api/pay", async (req, res) => {
 
 
 // Load tokens on server start
-let downloadTokens = new Map();
 (async () => {
   try {
     const saved = JSON.parse(await fs.readFile(tokensPath));
@@ -428,6 +427,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
