@@ -193,7 +193,7 @@ app.post("/api/pay", async (req, res) => {
       },
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    checkoutFileMap.set(stkRes.data.CheckoutRequestID, sanitizedFilename);
+    checkoutFileMap.set(stkRes.data.CheckoutRequestID, sanitizedFileName);
     
     console.log("✅ STK Push Response:", stkRes.data);
     res.json({ success: true, data: stkRes.data });
@@ -471,6 +471,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
