@@ -110,16 +110,15 @@ app.get('/api/files/:filename', async (req, res) => {
     const { filename } = req.params;
     const { token } = req.query;
 
-    // Check token
+    // ✅ Token check
     const entry = downloadTokens.get(token);
     if (!entry || entry.expires < Date.now() || entry.filename !== filename) {
       return res.status(403).send('❌ Invalid or expired token');
     }
 
-    // File path (adjust as needed)
-    const filePath = path.join(__dirname, 'files', filename);
+    // ✅ Correct path (uploads, not files)
+    const filePath = path.join(uploadDir, filename);
 
-    // Send file
     res.download(filePath, filename, (err) => {
       if (err) console.error('❌ Error sending file:', err);
     });
@@ -127,7 +126,7 @@ app.get('/api/files/:filename', async (req, res) => {
     console.error('❌ Error in /api/files:', err);
     res.status(500).send('Server error');
   }
-  });
+});
 
 // Delete file (admin only)
 app.delete('/api/files/:filename', async (req, res) => {
@@ -341,16 +340,16 @@ app.get("/download", async (req, res) => {
       return res.status(403).send("Invalid or expired token");
     }
 
-    const filePath = path.join(__dirname, "uploads", file.fileName);
+    // ✅ Correct file path
+    const filePath = path.join(uploadDir, entry.filename);
 
-
-    return res.download(filePath, entry.filename, (err) => {
+    res.download(filePath, entry.filename, (err) => {
       if (err) {
         console.error("❌ Error serving file:", err);
         res.status(500).send("Error downloading file");
       } else {
         console.log(`✅ File downloaded: ${entry.filename}`);
-        // Optionally invalidate token after first download
+        // Optional: invalidate after download
         downloadTokens.delete(token);
         saveTokens().catch(console.error);
       }
@@ -541,4 +540,5 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
