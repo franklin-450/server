@@ -397,7 +397,7 @@ const formatKES = (amount) => {
 // ✅ Utility: read transactions
 async function readTransactions() {
   try {
-    const data = await fs.promises.readFile(TRANSACTION_FILE, "utf8");
+    const data = await fs.readFile(TRANSACTION_FILE, "utf8"); // no .promises
     return JSON.parse(data);
   } catch (err) {
     if (err.code === "ENOENT") return [];
@@ -407,11 +407,12 @@ async function readTransactions() {
 
 // ✅ Utility: write transactions
 async function writeTransactions(transactions) {
-  await fs.promises.writeFile(
+  await fs.writeFile(
     TRANSACTION_FILE,
     JSON.stringify(transactions, null, 2)
   );
 }
+
 
 // === ADMIN STATS ===
 app.get("/api/admin/transactions", async (req, res) => {
@@ -560,4 +561,5 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
