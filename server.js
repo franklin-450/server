@@ -382,104 +382,116 @@ app.post('/api/admin-login', (req, res) => {
   const { key } = req.body;
   if (ADMIN_SECRET.includes(key)) return res.json({ success: true });
   res.status(401).json({ success: false, message: "Invalid key" });
-});
-app.get("/api/admin/transactions", (req, res) => {
-  const fs = require("fs");
-  const path = require("path");
+});const TRANSACTION_FILE = path.join(__dirname, "transactions.json");
+const METADATA_FILE = path.join(__dirname, "metadata.json");
 
+// ✅ Currency formatter for KES
+const formatKES = (amount) => {
+  return new Intl.NumberFormat("en-KE", {
+    style: "currency",
+    currency: "KES",
+    minimumFractionDigits: 2,
+  }).format(amount || 0);
+};
+
+// ✅ Utility: read transactions
+async function readTransactions() {
   try {
-    // Load transactions + metadata
+    const data = await fs.promises.readFile(TRANSACTION_FILE, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
+  }
+}
 
-    const transactions = JSON.parse(fs.readFileSync(transactionsPath, "utf-8"));
-    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8"));
+// ✅ Utility: write transactions
+async function writeTransactions(transactions) {
+  await fs.promises.writeFile(
+    TRANSACTION_FILE,
+    JSON.stringify(transactions, null, 2)
+  );
+}
 
-    // Revenue counters
+// === ADMIN STATS ===
+app.get("/api/admin/transactions", async (req, res) => {
+  try {
+    const transactions = await readTransactions();
+    const metadata = fs.existsSync(METADATA_FILE)
+      ? JSON.parse(fs.readFileSync(METADATA_FILE, "utf-8"))
+      : [];
+
     let revenue = { today: 0, week: 0, month: 0, year: 0, total: 0 };
-
-    // Downloads counter per file
     let downloadsMap = {};
 
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday = start
+    startOfWeek.setDate(now.getDate() - now.getDay());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfYear = new Date(now.getFullYear(), 0, 1);
 
-    // Process transactions
     transactions.forEach((t) => {
-      const amount = parseFloat(t.amount || 0);
+      const amount = parseFloat(t.amount) || 0;
       const createdAt = new Date(t.date || t.timestamp || now);
 
-      // Revenue by period
       if (createdAt >= startOfToday) revenue.today += amount;
       if (createdAt >= startOfWeek) revenue.week += amount;
       if (createdAt >= startOfMonth) revenue.month += amount;
       if (createdAt >= startOfYear) revenue.year += amount;
       revenue.total += amount;
 
-      // Downloads tracking
       if (t.fileId) {
         downloadsMap[t.fileId] = (downloadsMap[t.fileId] || 0) + 1;
       }
     });
 
-    // Map file IDs to actual filenames from metadata.json
     let highestDownloads = Object.entries(downloadsMap)
       .map(([fileId, count]) => {
         const fileMeta = metadata.find((m) => m.id == fileId) || {};
         return {
           fileId,
-          filename: fileMeta.filename || "Unknown",
+          filename: fileMeta.filename || "Unknown File",
           count,
         };
       })
-      .sort((a, b) => b.count - a.count) // highest first
-      .slice(0, 10); // top 10
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
 
     res.json({
-      revenue,
+      revenue: {
+        today: formatKES(revenue.today),
+        week: formatKES(revenue.week),
+        month: formatKES(revenue.month),
+        year: formatKES(revenue.year),
+        total: formatKES(revenue.total),
+      },
       highestDownloads,
       totalTransactions: transactions.length,
-      transactions, // optional: full list
+      transactions: transactions.map((t) => ({
+        ...t,
+        amount: formatKES(t.amount),
+        date: new Date(t.date || t.timestamp).toLocaleString("en-KE", {
+          timeZone: "Africa/Nairobi",
+        }),
+      })),
     });
-
   } catch (err) {
     console.error("Error reading transactions:", err);
     res.status(500).json({ error: "Failed to load admin stats" });
   }
 });
 
-
 // === PAYMENT STATUS ===
-app.get('/api/status/:id', (req, res) => {
+app.get("/api/status/:id", (req, res) => {
   const status = confirmations.get(req.params.id);
   res.json({ paid: status || false });
 });
 
-const TRANSACTION_FILE = path.join(__dirname, "transactions.json");
-
-// ✅ Utility function: read transactions
-async function readTransactions() {
-  try {
-    const data = await fs.readFile(TRANSACTION_FILE, "utf8");
-    return JSON.parse(data);
-  } catch (err) {
-    if (err.code === "ENOENT") return []; // file not found → start empty
-    throw err;
-  }
-}
-
-// ✅ Utility function: write transactions
-async function writeTransactions(transactions) {
-  await fs.writeFile(TRANSACTION_FILE, JSON.stringify(transactions, null, 2));
-}
-
-// 📌 API: log a transaction
+// === LOG TRANSACTION ===
 router.post("/api/transactions", async (req, res) => {
   try {
     const { mpesaReceipt, phone, amount, filename } = req.body;
-
     if (!mpesaReceipt || !phone || !amount || !filename) {
       return res.status(400).json({ error: "Missing required fields" });
     }
@@ -487,10 +499,11 @@ router.post("/api/transactions", async (req, res) => {
     const transactions = await readTransactions();
 
     const newTx = {
-      id: mpesaReceipt, // M-Pesa receipt number as unique id
+      id: mpesaReceipt,
       phone,
-      amount,
+      amount: parseFloat(amount),
       filename,
+      status: "Confirmed",
       date: new Date().toISOString(),
     };
 
@@ -504,7 +517,7 @@ router.post("/api/transactions", async (req, res) => {
   }
 });
 
-// 📌 API: get all transactions
+// === GET ALL TRANSACTIONS ===
 router.get("/api/transactions", async (req, res) => {
   try {
     const transactions = await readTransactions();
@@ -515,7 +528,7 @@ router.get("/api/transactions", async (req, res) => {
   }
 });
 
-// 📌 API: get single transaction by receipt id
+// === GET ONE TRANSACTION ===
 router.get("/api/transactions/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -526,7 +539,13 @@ router.get("/api/transactions/:id", async (req, res) => {
       return res.status(404).json({ error: "Transaction not found" });
     }
 
-    res.json(tx);
+    res.json({
+      ...tx,
+      amount: formatKES(tx.amount),
+      date: new Date(tx.date).toLocaleString("en-KE", {
+        timeZone: "Africa/Nairobi",
+      }),
+    });
   } catch (err) {
     console.error("Error fetching transaction:", err);
     res.status(500).json({ error: "Failed to fetch transaction" });
@@ -541,3 +560,4 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
