@@ -26,7 +26,7 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 // ✅ Health check
@@ -676,6 +676,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
