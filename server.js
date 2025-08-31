@@ -384,169 +384,284 @@ app.post('/api/admin-login', (req, res) => {
   res.status(401).json({ success: false, message: "Invalid key" });
 });const TRANSACTION_FILE = path.join(__dirname, "transactions.json");
 const METADATA_FILE = path.join(__dirname, "metadata.json");
+// ===== ADMIN / TRANSACTIONS UTILITIES (fs/promises only) =====
 
-// ✅ Currency formatter for KES
-const formatKES = (amount) => {
-  return new Intl.NumberFormat("en-KE", {
+// Files:
+// - transactionLogPath -> where M-Pesa callback logs (your code already writes here)
+// - metadataPath       -> your metadata.json (created on init above)
+
+const NAIROBI_TZ = "Africa/Nairobi";
+
+// KES currency formatter
+const formatKES = (amount) =>
+  new Intl.NumberFormat("en-KE", {
     style: "currency",
     currency: "KES",
     minimumFractionDigits: 2,
-  }).format(amount || 0);
-};
+  }).format(Number.isFinite(+amount) ? +amount : 0);
 
-// ✅ Utility: read transactions
-async function readTransactions() {
+// Safe JSON read (no existsSync, no sync IO)
+async function readJsonSafe(filePath, fallback = []) {
   try {
-    const data = await fs.readFile(TRANSACTION_FILE, "utf8"); // no .promises
-    return JSON.parse(data);
+    const txt = await fs.readFile(filePath, "utf8");
+    return JSON.parse(txt);
   } catch (err) {
-    if (err.code === "ENOENT") return [];
+    if (err && err.code === "ENOENT") return fallback;
     throw err;
   }
 }
 
-// ✅ Utility: write transactions
-async function writeTransactions(transactions) {
-  await fs.writeFile(
-    TRANSACTION_FILE,
-    JSON.stringify(transactions, null, 2)
-  );
+// Format a date-like value to Nairobi local time
+function formatDateNairobi(dateLike) {
+  const d = dateLike ? new Date(dateLike) : null;
+  if (!d || isNaN(d.getTime())) return "N/A";
+  return d.toLocaleString("en-KE", { timeZone: NAIROBI_TZ });
 }
 
+// Normalize a transaction (guard against null/undefined)
+function normalizeTx(raw) {
+  const tx = raw || {};
 
-// === ADMIN STATS ===
+  // prefer explicit mpesaReceipt, fall back to id
+  const mpesaReceipt = tx.mpesaReceipt || tx.id || "N/A";
+
+  // prefer `timestamp` (from your callback), fallback to `date`
+  const transactionDateRaw = tx.timestamp || tx.date || null;
+  const dateFormatted = formatDateNairobi(transactionDateRaw);
+
+  const amountNum = Number.isFinite(+tx.amount) ? +tx.amount : 0;
+
+  return {
+    id: String(mpesaReceipt),                 // expose ID as mpesaReceipt
+    mpesaReceipt: String(mpesaReceipt),
+    phone: tx.phone || "N/A",
+    filename: tx.filename || "UNKNOWN",
+    status: tx.status || "PENDING",           // SUCCESS/FAILED/PENDING
+    amount: amountNum,                        // numeric (raw)
+    amountKES: formatKES(amountNum),          // formatted
+    transactionDate: transactionDateRaw || null,
+    transactionDateFormatted: dateFormatted,  // human-friendly (Nairobi)
+    // keep originals if you want to inspect later
+    _original: tx,
+  };
+}
+
+// Get period boundaries (using server time; display is in Nairobi)
+function getPeriodStarts() {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay()); // Sunday start
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfYear  = new Date(now.getFullYear(), 0, 1);
+  return { now, startOfToday, startOfWeek, startOfMonth, startOfYear };
+}
+
+// ===== ADMIN: AGGREGATED STATS =====
+// GET /api/admin/transactions
+// Optional query params:
+//   ?status=SUCCESS|FAILED|PENDING
+//   &from=2025-01-01
+//   &to=2025-12-31
+//   &page=1&limit=50
 app.get("/api/admin/transactions", async (req, res) => {
   try {
-    const transactions = await readTransactions();
-    const metadata = fs.existsSync(METADATA_FILE)
-      ? JSON.parse(fs.readFileSync(METADATA_FILE, "utf-8"))
-      : [];
+    // Load data
+    const logs = await readJsonSafe(transactionLogPath, []);
+    const metadata = await readJsonSafe(metadataPath, []);
 
-    let revenue = { today: 0, week: 0, month: 0, year: 0, total: 0 };
-    let downloadsMap = {};
+    // Normalize
+    let txs = logs.map(normalizeTx);
 
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay());
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfYear = new Date(now.getFullYear(), 0, 1);
+    // --- Filtering (optional) ---
+    const { status, from, to, page = "1", limit = "100" } = req.query;
 
-    transactions.forEach((t) => {
-      const amount = parseFloat(t.amount) || 0;
-      const createdAt = new Date(t.date || t.timestamp || now);
+    if (status) {
+      const allowed = String(status).toUpperCase();
+      txs = txs.filter(t => String(t.status).toUpperCase() === allowed);
+    }
 
-      if (createdAt >= startOfToday) revenue.today += amount;
-      if (createdAt >= startOfWeek) revenue.week += amount;
-      if (createdAt >= startOfMonth) revenue.month += amount;
-      if (createdAt >= startOfYear) revenue.year += amount;
-      revenue.total += amount;
-
-      if (t.fileId) {
-        downloadsMap[t.fileId] = (downloadsMap[t.fileId] || 0) + 1;
+    if (from) {
+      const fromDate = new Date(from);
+      if (!isNaN(fromDate.getTime())) {
+        txs = txs.filter(t => {
+          const d = t.transactionDate ? new Date(t.transactionDate) : null;
+          return d && !isNaN(d) && d >= fromDate;
+        });
       }
-    });
+    }
 
-    let highestDownloads = Object.entries(downloadsMap)
-      .map(([fileId, count]) => {
-        const fileMeta = metadata.find((m) => m.id == fileId) || {};
+    if (to) {
+      const toDate = new Date(to);
+      if (!isNaN(toDate.getTime())) {
+        txs = txs.filter(t => {
+          const d = t.transactionDate ? new Date(t.transactionDate) : null;
+          return d && !isNaN(d) && d <= toDate;
+        });
+      }
+    }
+
+    // --- Revenue buckets ---
+    const { startOfToday, startOfWeek, startOfMonth, startOfYear } = getPeriodStarts();
+    let rev = { today: 0, week: 0, month: 0, year: 0, total: 0 };
+
+    for (const t of txs) {
+      const amt = t.amount || 0;
+      const d = t.transactionDate ? new Date(t.transactionDate) : null;
+
+      // Only count successful transactions into revenue
+      if (String(t.status).toUpperCase() !== "SUCCESS") {
+        continue;
+      }
+
+      if (d && !isNaN(d)) {
+        if (d >= startOfToday) rev.today += amt;
+        if (d >= startOfWeek) rev.week += amt;
+        if (d >= startOfMonth) rev.month += amt;
+        if (d >= startOfYear) rev.year += amt;
+      }
+      rev.total += amt;
+    }
+
+    // --- Downloads per file (by filename) from successful transactions ---
+    const downloadsMap = new Map(); // filename -> count
+    for (const t of txs) {
+      if (String(t.status).toUpperCase() === "SUCCESS" && t.filename && t.filename !== "UNKNOWN") {
+        downloadsMap.set(t.filename, (downloadsMap.get(t.filename) || 0) + 1);
+      }
+    }
+
+    const highestDownloads = [...downloadsMap.entries()]
+      .map(([filename, count]) => {
+        // try to find friendly title by filename in metadata.json
+        const meta = metadata.find(m => m.filename === filename) || {};
         return {
-          fileId,
-          filename: fileMeta.filename || "Unknown File",
-          count,
+          filename: filename || "Unknown File",
+          title: meta.title || meta.filename || "Unknown",
+          count
         };
       })
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
+    // --- Pagination (on the filtered set) ---
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
+    const total = txs.length;
+    const start = (pageNum - 1) * limitNum;
+    const end = start + limitNum;
+
+    const paged = txs
+      .sort((a, b) => {
+        // sort newest first by transactionDate; fallback to id
+        const ad = a.transactionDate ? new Date(a.transactionDate).getTime() : 0;
+        const bd = b.transactionDate ? new Date(b.transactionDate).getTime() : 0;
+        return bd - ad || String(b.id).localeCompare(String(a.id));
+      })
+      .slice(start, end)
+      .map(t => ({
+        id: t.id,
+        mpesaReceipt: t.mpesaReceipt,
+        phone: t.phone,
+        filename: t.filename,
+        status: t.status,
+        amount: t.amount,                     // numeric
+        amountKES: t.amountKES,               // formatted
+        transactionDate: t.transactionDate,   // raw ISO or null
+        transactionDateFormatted: t.transactionDateFormatted,
+      }));
+
+    // Respond
     res.json({
       revenue: {
-        today: formatKES(revenue.today),
-        week: formatKES(revenue.week),
-        month: formatKES(revenue.month),
-        year: formatKES(revenue.year),
-        total: formatKES(revenue.total),
+        today: formatKES(rev.today),
+        week:  formatKES(rev.week),
+        month: formatKES(rev.month),
+        year:  formatKES(rev.year),
+        total: formatKES(rev.total),
       },
       highestDownloads,
-      totalTransactions: transactions.length,
-      transactions: transactions.map((t) => ({
-        ...t,
-        amount: formatKES(t.amount),
-        date: new Date(t.date || t.timestamp).toLocaleString("en-KE", {
-          timeZone: "Africa/Nairobi",
-        }),
-      })),
+      totals: {
+        all: total,
+        success: txs.filter(t => String(t.status).toUpperCase() === "SUCCESS").length,
+        failed:  txs.filter(t => String(t.status).toUpperCase() === "FAILED").length,
+        pending: txs.filter(t => String(t.status).toUpperCase() === "PENDING").length,
+      },
+      page: pageNum,
+      limit: limitNum,
+      count: paged.length,
+      transactions: paged,
     });
   } catch (err) {
-    console.error("Error reading transactions:", err);
+    console.error("Error reading transactions (admin):", err);
     res.status(500).json({ error: "Failed to load admin stats" });
   }
 });
-
-// === PAYMENT STATUS ===
 app.get("/api/status/:id", (req, res) => {
-  const status = confirmations.get(req.params.id);
-  res.json({ paid: status || false });
-});
+            const status = confirmations.get(req.params.id);
+            res.json({ paid: status || false });
+          });
 
-// === LOG TRANSACTION ===
-router.post("/api/transactions", async (req, res) => {
+// ===== LOG A TRANSACTION (manual insert, NOT hardcoded) =====
+// POST /api/transactions
+// body: { mpesaReceipt, phone, amount, filename, status?, date? }
+// - If date is omitted, server will set current time (ISO) as `date`
+app.post("/api/transactions", async (req, res) => {
   try {
-    const { mpesaReceipt, phone, amount, filename } = req.body;
+    const { mpesaReceipt, phone, amount, filename, status, date } = req.body;
+
     if (!mpesaReceipt || !phone || !amount || !filename) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const transactions = await readTransactions();
+    const logs = await readJsonSafe(transactionLogPath, []);
 
     const newTx = {
+      // keep your callback-compatible field names
       id: mpesaReceipt,
+      mpesaReceipt,
       phone,
-      amount: parseFloat(amount),
+      amount: Number(amount),
       filename,
-      status: "Confirmed",
-      date: new Date().toISOString(),
+      status: status || "Confirmed", // You can pass SUCCESS/FAILED/Confirmed etc.
+      date: date ? new Date(date).toISOString() : new Date().toISOString(),
     };
 
-    transactions.push(newTx);
-    await writeTransactions(transactions);
+    logs.push(newTx);
+    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
 
-    res.json({ success: true, transaction: newTx });
+    res.json({ success: true, transaction: normalizeTx(newTx) });
   } catch (err) {
     console.error("Error saving transaction:", err);
     res.status(500).json({ error: "Failed to save transaction" });
   }
 });
 
-// === GET ALL TRANSACTIONS ===
-router.get("/api/transactions", async (req, res) => {
+// ===== GET ALL TRANSACTIONS (raw, unpaginated) =====
+// GET /api/transactions
+app.get("/api/transactions", async (_req, res) => {
   try {
-    const transactions = await readTransactions();
-    res.json(transactions);
+    const logs = await readJsonSafe(transactionLogPath, []);
+    res.json(logs.map(normalizeTx));
   } catch (err) {
     console.error("Error reading transactions:", err);
     res.status(500).json({ error: "Failed to read transactions" });
   }
 });
 
-// === GET ONE TRANSACTION ===
-router.get("/api/transactions/:id", async (req, res) => {
+// ===== GET SINGLE TRANSACTION BY RECEIPT/ID =====
+// GET /api/transactions/:id
+app.get("/api/transactions/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const transactions = await readTransactions();
-    const tx = transactions.find((t) => t.id === id);
+    const logs = await readJsonSafe(transactionLogPath, []);
 
-    if (!tx) {
-      return res.status(404).json({ error: "Transaction not found" });
-    }
+    // match either mpesaReceipt or id
+    const raw = logs.find(t => String(t.mpesaReceipt || t.id) === String(id));
+    if (!raw) return res.status(404).json({ error: "Transaction not found" });
 
-    res.json({
-      ...tx,
-      amount: formatKES(tx.amount),
-      date: new Date(tx.date).toLocaleString("en-KE", {
-        timeZone: "Africa/Nairobi",
-      }),
-    });
+    const tx = normalizeTx(raw);
+    res.json(tx);
   } catch (err) {
     console.error("Error fetching transaction:", err);
     res.status(500).json({ error: "Failed to fetch transaction" });
@@ -561,5 +676,6 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
