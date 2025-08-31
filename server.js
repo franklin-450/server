@@ -341,8 +341,8 @@ app.get("/download", async (req, res) => {
       return res.status(403).send("Invalid or expired token");
     }
 
-    const filePath = path.join(__dirname, "uploads", file.fileName);
-
+    // ✅ use entry.filename and correct uploads directory
+    const filePath = path.join(__dirname, "uploads", entry.filename);
 
     return res.download(filePath, entry.filename, (err) => {
       if (err) {
@@ -350,7 +350,7 @@ app.get("/download", async (req, res) => {
         res.status(500).send("Error downloading file");
       } else {
         console.log(`✅ File downloaded: ${entry.filename}`);
-        // Optionally invalidate token after first download
+        // Invalidate token after download if you want
         downloadTokens.delete(token);
         saveTokens().catch(console.error);
       }
@@ -676,6 +676,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
