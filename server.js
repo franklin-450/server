@@ -117,7 +117,7 @@ app.get('/api/files/:filename', async (req, res) => {
     }
 
     // File path (adjust as needed)
-    const filePath = path.join(__dirname, 'files', filename);
+  const filePath = path.join(__dirname, 'uploads', filename);
 
     // Send file
     res.download(filePath, filename, (err) => {
@@ -676,6 +676,7 @@ app.use('/', router);
 
 // === SERVER START ===
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
