@@ -18,7 +18,8 @@ const PORT = process.env.PORT || 3000;
 
 /* === CONFIG === */
 const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton'];
-const uploadDir = path.join(__dirname, 'uploads');
+// Change just this one line at the top
+const uploadDir = path.join(__dirname, 'files'); 
 const metadataPath = path.join(uploadDir, 'metadata.json');
 const transactionLogPath = path.join(__dirname, 'transactions.json');
 const tokensPath = path.join(__dirname, 'tokens.json');
@@ -666,3 +667,4 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
