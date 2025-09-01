@@ -1,3 +1,7 @@
+// server.js - consolidated, robust version (fs/promises only)
+// Replace your existing file with this. Keeps your routes and behavior,
+// but fixes token/download handling and normalizes transaction data.
+
 const express = require('express');
 const multer = require('multer');
 const fs = require('fs/promises');
@@ -7,47 +11,65 @@ const crypto = require('crypto');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const moment = require("moment");
-const router = express.Router();
 
 const app = express();
-const PORT = 3000;
+const router = express.Router();
+const PORT = process.env.PORT || 3000;
 
-// === CONFIGURATION ===
-const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton']; // admin keys
-
+/* === CONFIG === */
+const ADMIN_SECRET = ['adminsecret', 'wizard123', 'godmode', 'schemehub250', 'klinton'];
 const uploadDir = path.join(__dirname, 'uploads');
 const metadataPath = path.join(uploadDir, 'metadata.json');
-const transactionLogPath = "./transactions.json";
-const transactionsPath = path.join(__dirname, "transactions.json");
-const tokensPath = "./tokens.json";
+const transactionLogPath = path.join(__dirname, 'transactions.json');
+const tokensPath = path.join(__dirname, 'tokens.json');
 const freeDownloadLogPath = path.join(__dirname, 'free_downloads.json');
 
+const NAIROBI_TZ = "Africa/Nairobi";
+
+/* === MIDDLEWARE === */
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static('public'));
 app.use(express.json());
-app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
+// Keep static for public, but do NOT expose raw uploads without token check
+app.use(express.static('public'));
+// NOTE: we do NOT mount express.static on /api/uploads to avoid bypassing token check
+// If you want public direct access for some files, you can add a separate public folder.
 
-
-// ✅ Health check
-app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manager is running.'));
-
-// === STATE ===
+/* === STATE === */
 let metadataCache = [];
-const confirmations = new Map(); 
-const downloadTokens = new Map();
-const checkoutFileMap = new Map();
+const confirmations = new Map();
+const downloadTokens = new Map(); // token -> { filename, expires, mpesaReceipt? }
+const checkoutFileMap = new Map(); // CheckoutRequestID -> sanitized filename
 
-// === INIT ===
+/* === INIT FS (create uploads folder & metadata) === */
 (async () => {
   try {
     await fs.mkdir(uploadDir, { recursive: true });
-    if (!(await fileExists(metadataPath))) await fs.writeFile(metadataPath, '[]');
-    if (!(await fileExists(transactionLogPath))) await fs.writeFile(transactionLogPath, '[]');
-    if (!(await fileExists(freeDownloadLogPath))) await fs.writeFile(freeDownloadLogPath, '[]');
-    metadataCache = JSON.parse(await fs.readFile(metadataPath));
+    if (!(await fileExists(metadataPath))) await fs.writeFile(metadataPath, '[]', 'utf8');
+    if (!(await fileExists(transactionLogPath))) await fs.writeFile(transactionLogPath, '[]', 'utf8');
+    if (!(await fileExists(freeDownloadLogPath))) await fs.writeFile(freeDownloadLogPath, '[]', 'utf8');
+    if (!(await fileExists(tokensPath))) await fs.writeFile(tokensPath, '{}', 'utf8');
+
+    // load metadata
+    try {
+      const md = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+      metadataCache = Array.isArray(md) ? md : [];
+    } catch (e) {
+      metadataCache = [];
+    }
+
+    // load tokens
+    try {
+      const saved = JSON.parse(await fs.readFile(tokensPath, 'utf8'));
+      for (const [k, v] of Object.entries(saved)) downloadTokens.set(k, v);
+      console.log(`✅ Loaded ${downloadTokens.size} tokens from disk`);
+    } catch (e) {
+      console.log('⚠️ No tokens loaded (starting fresh)');
+    }
+
+    console.log('✅ Init complete');
   } catch (e) {
-    console.error('Init error:', e.message);
+    console.error('Init error:', e);
   }
 })();
 
@@ -55,7 +77,7 @@ async function fileExists(filePath) {
   try { await fs.access(filePath); return true; } catch { return false; }
 }
 
-// === FILE UPLOAD ===
+/* === Multer storage === */
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, uploadDir),
   filename: (_, file, cb) => {
@@ -66,250 +88,312 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// === TOKEN CLEANUP ===
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, data] of downloadTokens) {
-    if (data.expires < now) downloadTokens.delete(token);
-  }
-}, 60000);
+/* === UTIL: formaters & safe reads === */
+const formatKES = (amount) => new Intl.NumberFormat("en-KE", {
+  style: "currency",
+  currency: "KES",
+  minimumFractionDigits: 2
+}).format(Number.isFinite(+amount) ? +amount : 0);
 
-// === ROUTES ===
-
-// Upload new file
-app.post('/api/upload', upload.single('file'), async (req, res) => {
-  const { title, subject, class: className, price, type, category } = req.body;
-  if (!req.file || !title || !subject || !className || !price || !type || !category) {
-    return res.status(400).json({ success: false, message: 'Missing fields' });
+async function readJsonSafe(filePath, fallback = []) {
+  try {
+    const txt = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(txt);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return fallback;
+    return fallback;
   }
-  const fileUrl = `/uploads/${req.file.filename}`;
-  const fileInfo = {
-    id: Date.now(),
-    title,
-    subject,
-    class: className,
-    category,
-    price,
-    type,
-    filename: req.file.filename,
-    mimetype: req.file.mimetype,
-    path: fileUrl,
-    uploadDate: new Date().toISOString()
+}
+
+function formatDateNairobi(dateLike) {
+  const d = dateLike ? new Date(dateLike) : null;
+  if (!d || isNaN(d.getTime())) return 'N/A';
+  return d.toLocaleString('en-KE', { timeZone: NAIROBI_TZ });
+}
+
+function normalizeTx(raw) {
+  const tx = raw || {};
+  const mpesaReceipt = tx.mpesaReceipt || tx.id || 'N/A';
+  const transactionDateRaw = tx.timestamp || tx.date || tx.timestampAt || null;
+  const amountNum = Number.isFinite(+tx.amount) ? +tx.amount : 0;
+  return {
+    id: String(mpesaReceipt),
+    mpesaReceipt: String(mpesaReceipt),
+    phone: tx.phone || 'N/A',
+    filename: tx.filename || tx.file || 'UNKNOWN',
+    status: (tx.status || tx.result || 'PENDING').toString().toUpperCase(),
+    amount: amountNum,
+    amountKES: formatKES(amountNum),
+    transactionDate: transactionDateRaw || null,
+    transactionDateFormatted: formatDateNairobi(transactionDateRaw),
+    _original: tx
   };
+}
 
-  metadataCache.push(fileInfo);
-  await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
-  res.json({ success: true, file: fileInfo });
+/* === TOKEN PERSISTENCE === */
+async function saveTokens() {
+  try {
+    const obj = Object.fromEntries(downloadTokens);
+    await fs.writeFile(tokensPath, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Error saving tokens:', e);
+  }
+}
+
+/* === ROUTES START === */
+
+// health
+app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manager is running.'));
+
+/* ---------- Upload ---------- */
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    const { title, subject, class: className, price, type, category } = req.body;
+    if (!req.file || !title || !subject || !className || !price || !type || !category) {
+      return res.status(400).json({ success: false, message: 'Missing fields' });
+    }
+
+    const fileInfo = {
+      id: Date.now(),
+      title,
+      subject,
+      class: className,
+      category,
+      price,
+      type,
+      filename: req.file.filename,
+      mimetype: req.file.mimetype,
+      path: `/api/uploads/${req.file.filename}`,
+      uploadDate: new Date().toISOString()
+    };
+
+    metadataCache.push(fileInfo);
+    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
+    return res.json({ success: true, file: fileInfo });
+  } catch (err) {
+    console.error('Upload error:', err);
+    return res.status(500).json({ success: false, message: 'Upload failed' });
+  }
 });
 
-// List all files
-app.get('/api/files', (_, res) => res.json(metadataCache));
+/* ---------- List files (metadata) ---------- */
+app.get('/api/files', (_req, res) => res.json(metadataCache));
 
+/* ---------- Serve a file with token check ---------- */
+/*
+  GET /api/files/:filename?token=<token>
+  This endpoint enforces token-based access to uploaded files.
+*/
 app.get('/api/files/:filename', async (req, res) => {
   try {
     const { filename } = req.params;
-    const { token } = req.query;
+    const rawToken = (req.query.token || '').toString();
 
-    // Check token
-    const entry = downloadTokens.get(token);
+    // tolerant parsing for malformed token like "<filename>?token=<realtoken>"
+    const tokenCandidate = rawToken.split('?token=')[0].split('&token=')[0];
+
+    // If the tokenCandidate looks like a filename (contains '.'), then the client sent the filename as token.
+    // Try to find a valid token for that filename.
+    let token = tokenCandidate;
+    let entry = downloadTokens.get(token);
+
+    if ((!entry || entry.expires < Date.now()) && tokenCandidate.includes('.')) {
+      // tokenCandidate might be the filename; find an active token for that filename
+      const now = Date.now();
+      entry = [...downloadTokens.entries()].find(([k, v]) => {
+        return v.filename === tokenCandidate && v.expires > now;
+      });
+      if (entry) {
+        token = entry[0];
+        entry = entry[1];
+      } else {
+        entry = null;
+      }
+    }
+
     if (!entry || entry.expires < Date.now() || entry.filename !== filename) {
       return res.status(403).send('❌ Invalid or expired token');
     }
 
-    // File path (adjust as needed)
-  const filePath = path.join(__dirname, 'uploads', filename);
+    const filePath = path.join(uploadDir, filename);
+    // verify file exists
+    if (!(await fileExists(filePath))) {
+      return res.status(404).send('❌ File not found on server');
+    }
 
-    // Send file
-    res.download(filePath, filename, (err) => {
-      if (err) console.error('❌ Error sending file:', err);
+    return res.download(filePath, filename, (err) => {
+      if (err) {
+        console.error('❌ Error sending file:', err);
+        // If error, send 500 if file exists but cannot be read
+        if (err.code === 'ENOENT') return res.status(404).send('❌ File not found');
+        return res.status(500).send('❌ Error serving file');
+      } else {
+        // invalidate token after download (optional) — currently we keep but delete to prevent reuse
+        downloadTokens.delete(token);
+        saveTokens().catch(console.error);
+        console.log(`✅ File served: ${filename} (token: ${token})`);
+      }
     });
+
   } catch (err) {
-    console.error('❌ Error in /api/files:', err);
+    console.error('Error in /api/files/:filename:', err);
     res.status(500).send('Server error');
-  }
-  });
-
-// Delete file (admin only)
-app.delete('/api/files/:filename', async (req, res) => {
-  const { filename } = req.params;
-  const key = req.headers.apikey;
-
-  if (ADMIN_SECRET.includes(key)) {
-    return res.status(403).json({ success: false, message: "Unauthorized" });
-  }
-
-  const fullPath = path.join(uploadDir, filename);
-  try {
-    await fs.unlink(fullPath);
-    metadataCache = metadataCache.filter(f => f.filename !== filename);
-    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
-    res.json({ success: true, message: 'File deleted' });
-  } catch (e) {
-    res.status(404).json({ success: false, message: 'File not found' });
   }
 });
 
-// === M-PESA CONFIG ===
-const consumerkey = "NkxcAadvkohxGErrIm84VAccHA3nfSSRd5DH0mIe9sv9DDCn";
-const consumerSecret = "x636VF0x52vZBorz0Xjunw1dKZjHq7bdCbZnQeYkjemV6eA30qgtk6vylr9DSe8v";
-const shortCode = "174379";
-const passKey = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
+/* ---------- Delete file (admin) ---------- */
+app.delete('/api/files/:filename', async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const key = req.headers.apikey;
+    if (!ADMIN_SECRET.includes(key)) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const fullPath = path.join(uploadDir, filename);
+    if (!(await fileExists(fullPath))) {
+      return res.status(404).json({ success: false, message: 'File not found' });
+    }
+
+    await fs.unlink(fullPath);
+    metadataCache = metadataCache.filter(f => f.filename !== filename);
+    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
+    return res.json({ success: true, message: 'File deleted' });
+  } catch (e) {
+    console.error('Error deleting file:', e);
+    return res.status(500).json({ success: false, message: 'Delete failed' });
+  }
+});
+
+/* === M-PESA CONFIG & STK PUSH (unchanged logic) === */
+const consumerkey = process.env.MPESA_CONSUMER_KEY || "NkxcAadvkohxGErrIm84VAccHA3nfSSRd5DH0mIe9sv9DDCn";
+const consumerSecret = process.env.MPESA_CONSUMER_SECRET || "x636VF0x52vZBorz0Xjunw1dKZjHq7bdCbZnQeYkjemV6eA30qgtk6vylr9DSe8v";
+const shortCode = process.env.MPESA_SHORTCODE || "174379";
+const passKey = process.env.MPESA_PASSKEY || "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919";
 
 async function getAccessToken() {
   const auth = Buffer.from(`${consumerkey}:${consumerSecret}`).toString("base64");
-  const res = await axios.get(
-    "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
-    { headers: { Authorization: `Basic ${auth}` } }
-  );
-  return res.data.access_token;
+  const r = await axios.get("https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
+    { headers: { Authorization: `Basic ${auth}` }});
+  return r.data.access_token;
 }
 
-// === STK PUSH ===
 app.post("/api/pay", async (req, res) => {
-  const { phoneNumber, fileName, filePrice } = req.body;
-
-  // Sanitize filename
-  const sanitizedFileName = fileName
-    ? fileName.replace(/[^\w.-]/g, "_").trim()
-    : "UNKNOWN";
-
   try {
+    const { phoneNumber, fileName, filePrice } = req.body;
+    const sanitizedFileName = fileName ? fileName.replace(/[^\w.-]/g, "_").trim() : "UNKNOWN";
+
     const token = await getAccessToken();
     const timestamp = moment().format("YYYYMMDDHHmmss");
     const password = Buffer.from(shortCode + passKey + timestamp).toString("base64");
 
-    const stkRes = await axios.post(
-      "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
-      {
-        BusinessShortCode: shortCode,
-        Password: password,
-        Timestamp: timestamp,
-        TransactionType: "CustomerPayBillOnline",
-        Amount: filePrice,
-        PartyA: phoneNumber,
-        PartyB: shortCode,
-        PhoneNumber: phoneNumber,
-        CallBackURL: "https://server-1-bmux.onrender.com/api/confirm",
-        AccountReference: sanitizedFileName,
-        TransactionDesc: `Purchase ${sanitizedFileName}`
-      },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+    const stkRes = await axios.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
+      BusinessShortCode: shortCode,
+      Password: password,
+      Timestamp: timestamp,
+      TransactionType: "CustomerPayBillOnline",
+      Amount: filePrice,
+      PartyA: phoneNumber,
+      PartyB: shortCode,
+      PhoneNumber: phoneNumber,
+      CallBackURL: process.env.MPESA_CALLBACK_URL || "https://server-1-bmux.onrender.com/api/confirm",
+      AccountReference: sanitizedFileName,
+      TransactionDesc: `Purchase ${sanitizedFileName}`
+    }, { headers: { Authorization: `Bearer ${token}` }});
+
     checkoutFileMap.set(stkRes.data.CheckoutRequestID, sanitizedFileName);
-    
-    console.log("✅ STK Push Response:", stkRes.data);
+    console.log('✅ STK Push Response:', stkRes.data);
     res.json({ success: true, data: stkRes.data });
   } catch (error) {
-    console.error("❌ Error in STK Push:", error.response?.data || error.message);
+    console.error('❌ Error in STK Push:', error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.response?.data || error.message });
   }
 });
 
-// === LOAD TOKENS ON SERVER START ===
-(async () => {
-  try {
-    const saved = JSON.parse(await fs.readFile(tokensPath));
-    for (const [k, v] of Object.entries(saved)) downloadTokens.set(k, v);
-    console.log(`✅ Loaded ${downloadTokens.size} tokens from disk`);
-  } catch (e) {
-    console.log("⚠️ No saved tokens found, starting fresh");
-  }
-})();
-
-// === SAVE TOKENS ===
-async function saveTokens() {
-  const obj = Object.fromEntries(downloadTokens);
-  await fs.writeFile(tokensPath, JSON.stringify(obj, null, 2));
-}
-
-// === CONFIRMATION CALLBACK ===
+/* ---------- Confirmation callback from Safaricom (STK callback) ---------- */
 app.post("/api/confirm", async (req, res) => {
   try {
     const body = req.body;
     console.log("📥 M-Pesa Callback Received:", JSON.stringify(body, null, 2));
-
     const callback = body?.Body?.stkCallback;
     if (!callback) {
-      console.error("❌ Invalid callback payload");
+      console.error('Invalid callback payload');
       return res.status(200).json({ ResultCode: 0, ResultDesc: "Invalid payload" });
     }
 
     const checkoutId = callback.CheckoutRequestID;
     const status = callback.ResultCode;
+    const getItem = (name) => callback?.CallbackMetadata?.Item?.find(i => i.Name === name)?.Value || null;
 
-    const getItem = (name) =>
-      callback?.CallbackMetadata?.Item?.find((i) => i.Name === name)?.Value || null;
-// Use the mapped filename if AccountReference is missing
-const filename = getItem('AccountReference') || checkoutFileMap.get(checkoutId) || "UNKNOWN";
+    // try account reference fallback using checkoutFileMap
+    const filename = getItem('AccountReference') || checkoutFileMap.get(checkoutId) || "UNKNOWN";
 
-const paymentInfo = {
-  id: Date.now(),
-  checkoutId,
-  mpesaReceipt: getItem('MpesaReceiptNumber'),
-  amount: getItem('Amount'),
-  phone: getItem('PhoneNumber'),
-  filename, // now guaranteed to have the correct file
-  timestamp: new Date().toISOString(),
-  status: status === 0 ? 'SUCCESS' : 'FAILED'
-};
+    const paymentInfo = {
+      id: Date.now(),
+      checkoutId,
+      mpesaReceipt: getItem('MpesaReceiptNumber') || `R${Date.now()}`,
+      amount: getItem('Amount') || 0,
+      phone: getItem('PhoneNumber') || 'N/A',
+      filename,
+      timestamp: new Date().toISOString(),
+      status: status === 0 ? 'SUCCESS' : 'FAILED'
+    };
 
-    // Save transaction log
+    // append to transaction log
     let logs = [];
     try {
-      logs = JSON.parse(await fs.readFile(transactionLogPath));
+      logs = JSON.parse(await fs.readFile(transactionLogPath, 'utf8'));
+      if (!Array.isArray(logs)) logs = [];
     } catch (e) {
-      console.warn("⚠️ No transaction log found, creating new one");
+      logs = [];
     }
     logs.push(paymentInfo);
-    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
+    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2), 'utf8');
 
-    // Generate token if successful
+    // generate token on success
     if (status === 0) {
-      const token = crypto.randomBytes(16).toString("hex");
+      const token = crypto.randomBytes(16).toString('hex');
       downloadTokens.set(token, {
         filename: paymentInfo.filename,
-        expires: Date.now() + 60 * 60 * 1000
+        expires: Date.now() + 60 * 60 * 1000, // 1 hour
+        mpesaReceipt: paymentInfo.mpesaReceipt
       });
       await saveTokens();
-      console.log(`✅ Payment success. File: ${paymentInfo.filename}, Token: ${token}`);
+      console.log(`✅ Payment success. Generated token: ${token} -> ${paymentInfo.filename}`);
     } else {
-      console.log(`❌ Payment failed: ${callback.ResultDesc}`);
+      console.log(`❌ Payment failed (${checkoutId}): ${callback.ResultDesc || 'No desc'}`);
     }
 
     return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted" });
   } catch (err) {
-    console.error("❌ Error handling /api/confirm:", err);
+    console.error('Error handling /api/confirm:', err);
     return res.status(200).json({ ResultCode: 0, ResultDesc: "Accepted with error" });
   }
 });
 
-// === POLLING FOR FRONTEND ===
-// === GET /api/confirm - Frontend Polling + Token for Download ===
+/* ---------- Polling endpoint used by frontend to get token once payment confirmed ---------- */
+/*
+  GET /api/confirm?filename=<filename>
+  returns { confirmed: true, token, mpesaReceipt, amount, phone } when found
+*/
 app.get('/api/confirm', async (req, res) => {
   try {
     const { filename } = req.query;
     if (!filename) return res.status(400).json({ confirmed: false, message: "Filename required" });
 
-    // Load transaction logs
-    const logs = JSON.parse(await fs.readFile(transactionLogPath));
-    const tx = logs.find(l => l.status === "SUCCESS" && l.filename === filename);
+    const logs = JSON.parse(await fs.readFile(transactionLogPath, 'utf8')).filter(Boolean);
+    const tx = logs.reverse().find(l => String((l.status||'').toUpperCase()) === "SUCCESS" && l.filename === filename);
 
     if (tx) {
       const now = Date.now();
+      // cleanup expired
+      for (const [k, v] of downloadTokens) if (v.expires <= now) downloadTokens.delete(k);
 
-      // Cleanup expired tokens
-      for (const [k, v] of downloadTokens) {
-        if (v.expires <= now) downloadTokens.delete(k);
-      }
-
-      // Find or create active token for this file
-      let entry = [...downloadTokens.entries()].find(([_, obj]) => obj.filename === filename && obj.expires > now);
+      // find or create token for this filename
+      let entry = [...downloadTokens.entries()].find(([k, v]) => v.filename === filename && v.expires > now);
       if (!entry) {
         const token = crypto.randomBytes(16).toString('hex');
-        downloadTokens.set(token, {
-          filename,
-          expires: now + 60 * 60 * 1000 // 1 hour
-        });
+        downloadTokens.set(token, { filename, expires: now + 60 * 60 * 1000, mpesaReceipt: tx.mpesaReceipt });
         await saveTokens();
         entry = [token, downloadTokens.get(token)];
       }
@@ -323,46 +407,251 @@ app.get('/api/confirm', async (req, res) => {
       });
     }
 
-    res.json({ confirmed: false });
+    return res.json({ confirmed: false });
   } catch (err) {
-    console.error("❌ Error in /api/confirm (GET):", err);
-    res.status(500).json({ confirmed: false, error: "Server error" });
+    console.error('Error in /api/confirm (GET):', err);
+    return res.status(500).json({ confirmed: false, error: 'Server error' });
   }
 });
 
-// === DOWNLOAD BY TOKEN ===
-app.get("/download", async (req, res) => {
+/* ---------- DOWNLOAD endpoint (robust) ----------
+   GET /download?token=<token>
+   Accepts malformed tokens that contain '?token=' (will extract), or if token is a filename,
+   it will try to locate an active token for that filename and serve.
+*/
+app.get('/download', async (req, res) => {
   try {
-    const { token } = req.query;
-    if (!token) return res.status(400).send("Token required");
+    let raw = (req.query.token || '').toString();
 
-    const entry = downloadTokens.get(token);
-    if (!entry || entry.expires < Date.now()) {
-      return res.status(403).send("Invalid or expired token");
+    // handle URLs like: ?token=<filename>?token=<realtoken>
+    if (raw.includes('?token=')) {
+      raw = raw.split('?token=')[0];
+    }
+    if (raw.includes('&token=')) {
+      raw = raw.split('&token=')[0];
     }
 
-    // ✅ use entry.filename and correct uploads directory
-    const filePath = path.join(__dirname, "uploads", entry.filename);
+    // If the token looks like a filename (contains '.' and not hex chars), try to find matching token
+    let token = raw;
+    let entry = downloadTokens.get(token);
+
+    if ((!entry || entry.expires < Date.now()) && token && token.includes('.')) {
+      const now = Date.now();
+      const found = [...downloadTokens.entries()].find(([k, v]) => v.filename === token && v.expires > now);
+      if (found) {
+        token = found[0];
+        entry = found[1];
+      } else {
+        entry = null;
+      }
+    }
+
+    if (!entry || entry.expires < Date.now()) {
+      return res.status(403).send('Invalid or expired token');
+    }
+
+    const filePath = path.join(uploadDir, entry.filename);
+    if (!(await fileExists(filePath))) {
+      console.error('Error serving file: file not found', filePath);
+      return res.status(404).send('File not found');
+    }
 
     return res.download(filePath, entry.filename, (err) => {
       if (err) {
-        console.error("❌ Error serving file:", err);
-        res.status(500).send("Error downloading file");
+        console.error('Error serving file:', err);
+        return res.status(500).send('Error downloading file');
       } else {
-        console.log(`✅ File downloaded: ${entry.filename}`);
-        // Invalidate token after download if you want
+        // Invalidate token after download to avoid reuse
         downloadTokens.delete(token);
         saveTokens().catch(console.error);
+        console.log(`✅ File downloaded: ${entry.filename} (token ${token})`);
       }
     });
+
   } catch (err) {
-    console.error("❌ Error in /download:", err);
-    res.status(500).send("Server error");
+    console.error('❌ Error in /download:', err);
+    res.status(500).send('Server error');
   }
 });
 
+/* ---------- ADMIN / TRANSACTIONS API (aggregated stats) ---------- */
+function getPeriodStarts() {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  return { now, startOfToday, startOfWeek, startOfMonth, startOfYear };
+}
 
-// === CLEANUP TOKENS PERIODICALLY ===
+app.get("/api/admin/transactions", async (req, res) => {
+  try {
+    const logs = await readJsonSafe(transactionLogPath, []);
+    const metadata = await readJsonSafe(metadataPath, []);
+
+    let txs = logs.map(normalizeTx);
+    const { status, from, to, page = "1", limit = "100" } = req.query;
+
+    if (status) {
+      const allowed = String(status).toUpperCase();
+      txs = txs.filter(t => String(t.status).toUpperCase() === allowed);
+    }
+    if (from) {
+      const fromDate = new Date(from);
+      if (!isNaN(fromDate.getTime())) {
+        txs = txs.filter(t => t.transactionDate && new Date(t.transactionDate) >= fromDate);
+      }
+    }
+    if (to) {
+      const toDate = new Date(to);
+      if (!isNaN(toDate.getTime())) {
+        txs = txs.filter(t => t.transactionDate && new Date(t.transactionDate) <= toDate);
+      }
+    }
+
+    const { startOfToday, startOfWeek, startOfMonth, startOfYear } = getPeriodStarts();
+    let rev = { today: 0, week: 0, month: 0, year: 0, total: 0 };
+    for (const t of txs) {
+      if (String(t.status).toUpperCase() !== 'SUCCESS') continue;
+      const d = t.transactionDate ? new Date(t.transactionDate) : null;
+      const amt = t.amount || 0;
+      if (d && !isNaN(d)) {
+        if (d >= startOfToday) rev.today += amt;
+        if (d >= startOfWeek) rev.week += amt;
+        if (d >= startOfMonth) rev.month += amt;
+        if (d >= startOfYear) rev.year += amt;
+      }
+      rev.total += amt;
+    }
+
+    const downloadsMap = new Map();
+    for (const t of txs) {
+      if (String(t.status).toUpperCase() === 'SUCCESS' && t.filename && t.filename !== 'UNKNOWN') {
+        downloadsMap.set(t.filename, (downloadsMap.get(t.filename) || 0) + 1);
+      }
+    }
+    const highestDownloads = [...downloadsMap.entries()].map(([filename, count]) => {
+      const meta = metadata.find(m => m.filename === filename) || {};
+      return { filename, title: meta.title || meta.filename || filename, count };
+    }).sort((a, b) => b.count - a.count).slice(0, 10);
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
+    const total = txs.length;
+    const paged = txs.sort((a, b) => {
+      const ad = a.transactionDate ? new Date(a.transactionDate).getTime() : 0;
+      const bd = b.transactionDate ? new Date(b.transactionDate).getTime() : 0;
+      return bd - ad || String(b.id).localeCompare(String(a.id));
+    }).slice((pageNum - 1) * limitNum, (pageNum - 1) * limitNum + limitNum)
+      .map(t => ({
+        id: t.id,
+        mpesaReceipt: t.mpesaReceipt,
+        phone: t.phone,
+        filename: t.filename,
+        status: t.status,
+        amount: t.amount,
+        amountKES: t.amountKES,
+        transactionDate: t.transactionDate,
+        transactionDateFormatted: t.transactionDateFormatted
+      }));
+
+    res.json({
+      revenue: {
+        today: formatKES(rev.today),
+        week: formatKES(rev.week),
+        month: formatKES(rev.month),
+        year: formatKES(rev.year),
+        total: formatKES(rev.total)
+      },
+      highestDownloads,
+      totals: {
+        all: total,
+        success: txs.filter(t => String(t.status).toUpperCase() === 'SUCCESS').length,
+        failed: txs.filter(t => String(t.status).toUpperCase() === 'FAILED').length,
+        pending: txs.filter(t => String(t.status).toUpperCase() === 'PENDING').length
+      },
+      page: pageNum,
+      limit: limitNum,
+      count: paged.length,
+      transactions: paged
+    });
+
+  } catch (err) {
+    console.error('Error reading transactions (admin):', err);
+    res.status(500).json({ error: 'Failed to load admin stats' });
+  }
+});
+
+/* ---------- Simple status endpoint ---------- */
+app.get("/api/status/:id", (req, res) => {
+  const status = confirmations.get(req.params.id);
+  res.json({ paid: status || false });
+});
+
+/* ---------- Manual transaction logging ---------- */
+/*
+  POST /api/transactions
+  body: { mpesaReceipt, phone, amount, filename, status?, date? }
+*/
+app.post("/api/transactions", async (req, res) => {
+  try {
+    const { mpesaReceipt, phone, amount, filename, status, date } = req.body;
+    if (!mpesaReceipt || !phone || !amount || !filename) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    const logs = await readJsonSafe(transactionLogPath, []);
+    const newTx = {
+      id: mpesaReceipt,
+      mpesaReceipt,
+      phone,
+      amount: Number(amount),
+      filename,
+      status: (status || 'PENDING').toString(),
+      date: date ? new Date(date).toISOString() : new Date().toISOString()
+    };
+    logs.push(newTx);
+    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2), 'utf8');
+    res.json({ success: true, transaction: normalizeTx(newTx) });
+  } catch (err) {
+    console.error('Error saving transaction:', err);
+    res.status(500).json({ error: 'Failed to save transaction' });
+  }
+});
+
+/* ---------- Get all transactions (raw) ---------- */
+app.get("/api/transactions", async (_req, res) => {
+  try {
+    const logs = await readJsonSafe(transactionLogPath, []);
+    res.json(logs.map(normalizeTx));
+  } catch (err) {
+    console.error('Error reading transactions:', err);
+    res.status(500).json({ error: 'Failed to read transactions' });
+  }
+});
+
+/* ---------- Get single transaction ---------- */
+app.get("/api/transactions/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const logs = await readJsonSafe(transactionLogPath, []);
+    const raw = logs.find(t => String(t.mpesaReceipt || t.id) === String(id));
+    if (!raw) return res.status(404).json({ error: 'Transaction not found' });
+    res.json(normalizeTx(raw));
+  } catch (err) {
+    console.error('Error fetching transaction:', err);
+    res.status(500).json({ error: 'Failed to fetch transaction' });
+  }
+});
+
+/* ---------- Admin login (simple key check) ---------- */
+app.post('/api/admin-login', (req, res) => {
+  const { key } = req.body;
+  if (ADMIN_SECRET.includes(key)) return res.json({ success: true });
+  res.status(401).json({ success: false, message: "Invalid key" });
+});
+
+/* ---------- Periodic cleanup of expired tokens ---------- */
 setInterval(() => {
   const now = Date.now();
   let changed = false;
@@ -375,310 +664,5 @@ setInterval(() => {
   if (changed) saveTokens().catch(console.error);
 }, 10 * 60 * 1000);
 
-module.exports = app;
-
-// === ADMIN LOGIN ===
-app.post('/api/admin-login', (req, res) => {
-  const { key } = req.body;
-  if (ADMIN_SECRET.includes(key)) return res.json({ success: true });
-  res.status(401).json({ success: false, message: "Invalid key" });
-});const TRANSACTION_FILE = path.join(__dirname, "transactions.json");
-const METADATA_FILE = path.join(__dirname, "metadata.json");
-// ===== ADMIN / TRANSACTIONS UTILITIES (fs/promises only) =====
-
-// Files:
-// - transactionLogPath -> where M-Pesa callback logs (your code already writes here)
-// - metadataPath       -> your metadata.json (created on init above)
-
-const NAIROBI_TZ = "Africa/Nairobi";
-
-// KES currency formatter
-const formatKES = (amount) =>
-  new Intl.NumberFormat("en-KE", {
-    style: "currency",
-    currency: "KES",
-    minimumFractionDigits: 2,
-  }).format(Number.isFinite(+amount) ? +amount : 0);
-
-// Safe JSON read (no existsSync, no sync IO)
-async function readJsonSafe(filePath, fallback = []) {
-  try {
-    const txt = await fs.readFile(filePath, "utf8");
-    return JSON.parse(txt);
-  } catch (err) {
-    if (err && err.code === "ENOENT") return fallback;
-    throw err;
-  }
-}
-
-// Format a date-like value to Nairobi local time
-function formatDateNairobi(dateLike) {
-  const d = dateLike ? new Date(dateLike) : null;
-  if (!d || isNaN(d.getTime())) return "N/A";
-  return d.toLocaleString("en-KE", { timeZone: NAIROBI_TZ });
-}
-
-// Normalize a transaction (guard against null/undefined)
-function normalizeTx(raw) {
-  const tx = raw || {};
-
-  // prefer explicit mpesaReceipt, fall back to id
-  const mpesaReceipt = tx.mpesaReceipt || tx.id || "N/A";
-
-  // prefer `timestamp` (from your callback), fallback to `date`
-  const transactionDateRaw = tx.timestamp || tx.date || null;
-  const dateFormatted = formatDateNairobi(transactionDateRaw);
-
-  const amountNum = Number.isFinite(+tx.amount) ? +tx.amount : 0;
-
-  return {
-    id: String(mpesaReceipt),                 // expose ID as mpesaReceipt
-    mpesaReceipt: String(mpesaReceipt),
-    phone: tx.phone || "N/A",
-    filename: tx.filename || "UNKNOWN",
-    status: tx.status || "PENDING",           // SUCCESS/FAILED/PENDING
-    amount: amountNum,                        // numeric (raw)
-    amountKES: formatKES(amountNum),          // formatted
-    transactionDate: transactionDateRaw || null,
-    transactionDateFormatted: dateFormatted,  // human-friendly (Nairobi)
-    // keep originals if you want to inspect later
-    _original: tx,
-  };
-}
-
-// Get period boundaries (using server time; display is in Nairobi)
-function getPeriodStarts() {
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfWeek = new Date(startOfToday);
-  startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay()); // Sunday start
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const startOfYear  = new Date(now.getFullYear(), 0, 1);
-  return { now, startOfToday, startOfWeek, startOfMonth, startOfYear };
-}
-
-// ===== ADMIN: AGGREGATED STATS =====
-// GET /api/admin/transactions
-// Optional query params:
-//   ?status=SUCCESS|FAILED|PENDING
-//   &from=2025-01-01
-//   &to=2025-12-31
-//   &page=1&limit=50
-app.get("/api/admin/transactions", async (req, res) => {
-  try {
-    // Load data
-    const logs = await readJsonSafe(transactionLogPath, []);
-    const metadata = await readJsonSafe(metadataPath, []);
-
-    // Normalize
-    let txs = logs.map(normalizeTx);
-
-    // --- Filtering (optional) ---
-    const { status, from, to, page = "1", limit = "100" } = req.query;
-
-    if (status) {
-      const allowed = String(status).toUpperCase();
-      txs = txs.filter(t => String(t.status).toUpperCase() === allowed);
-    }
-
-    if (from) {
-      const fromDate = new Date(from);
-      if (!isNaN(fromDate.getTime())) {
-        txs = txs.filter(t => {
-          const d = t.transactionDate ? new Date(t.transactionDate) : null;
-          return d && !isNaN(d) && d >= fromDate;
-        });
-      }
-    }
-
-    if (to) {
-      const toDate = new Date(to);
-      if (!isNaN(toDate.getTime())) {
-        txs = txs.filter(t => {
-          const d = t.transactionDate ? new Date(t.transactionDate) : null;
-          return d && !isNaN(d) && d <= toDate;
-        });
-      }
-    }
-
-    // --- Revenue buckets ---
-    const { startOfToday, startOfWeek, startOfMonth, startOfYear } = getPeriodStarts();
-    let rev = { today: 0, week: 0, month: 0, year: 0, total: 0 };
-
-    for (const t of txs) {
-      const amt = t.amount || 0;
-      const d = t.transactionDate ? new Date(t.transactionDate) : null;
-
-      // Only count successful transactions into revenue
-      if (String(t.status).toUpperCase() !== "SUCCESS") {
-        continue;
-      }
-
-      if (d && !isNaN(d)) {
-        if (d >= startOfToday) rev.today += amt;
-        if (d >= startOfWeek) rev.week += amt;
-        if (d >= startOfMonth) rev.month += amt;
-        if (d >= startOfYear) rev.year += amt;
-      }
-      rev.total += amt;
-    }
-
-    // --- Downloads per file (by filename) from successful transactions ---
-    const downloadsMap = new Map(); // filename -> count
-    for (const t of txs) {
-      if (String(t.status).toUpperCase() === "SUCCESS" && t.filename && t.filename !== "UNKNOWN") {
-        downloadsMap.set(t.filename, (downloadsMap.get(t.filename) || 0) + 1);
-      }
-    }
-
-    const highestDownloads = [...downloadsMap.entries()]
-      .map(([filename, count]) => {
-        // try to find friendly title by filename in metadata.json
-        const meta = metadata.find(m => m.filename === filename) || {};
-        return {
-          filename: filename || "Unknown File",
-          title: meta.title || meta.filename || "Unknown",
-          count
-        };
-      })
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    // --- Pagination (on the filtered set) ---
-    const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
-    const total = txs.length;
-    const start = (pageNum - 1) * limitNum;
-    const end = start + limitNum;
-
-    const paged = txs
-      .sort((a, b) => {
-        // sort newest first by transactionDate; fallback to id
-        const ad = a.transactionDate ? new Date(a.transactionDate).getTime() : 0;
-        const bd = b.transactionDate ? new Date(b.transactionDate).getTime() : 0;
-        return bd - ad || String(b.id).localeCompare(String(a.id));
-      })
-      .slice(start, end)
-      .map(t => ({
-        id: t.id,
-        mpesaReceipt: t.mpesaReceipt,
-        phone: t.phone,
-        filename: t.filename,
-        status: t.status,
-        amount: t.amount,                     // numeric
-        amountKES: t.amountKES,               // formatted
-        transactionDate: t.transactionDate,   // raw ISO or null
-        transactionDateFormatted: t.transactionDateFormatted,
-      }));
-
-    // Respond
-    res.json({
-      revenue: {
-        today: formatKES(rev.today),
-        week:  formatKES(rev.week),
-        month: formatKES(rev.month),
-        year:  formatKES(rev.year),
-        total: formatKES(rev.total),
-      },
-      highestDownloads,
-      totals: {
-        all: total,
-        success: txs.filter(t => String(t.status).toUpperCase() === "SUCCESS").length,
-        failed:  txs.filter(t => String(t.status).toUpperCase() === "FAILED").length,
-        pending: txs.filter(t => String(t.status).toUpperCase() === "PENDING").length,
-      },
-      page: pageNum,
-      limit: limitNum,
-      count: paged.length,
-      transactions: paged,
-    });
-  } catch (err) {
-    console.error("Error reading transactions (admin):", err);
-    res.status(500).json({ error: "Failed to load admin stats" });
-  }
-});
-app.get("/api/status/:id", (req, res) => {
-            const status = confirmations.get(req.params.id);
-            res.json({ paid: status || false });
-          });
-
-// ===== LOG A TRANSACTION (manual insert, NOT hardcoded) =====
-// POST /api/transactions
-// body: { mpesaReceipt, phone, amount, filename, status?, date? }
-// - If date is omitted, server will set current time (ISO) as `date`
-app.post("/api/transactions", async (req, res) => {
-  try {
-    const { mpesaReceipt, phone, amount, filename, status, date } = req.body;
-
-    if (!mpesaReceipt || !phone || !amount || !filename) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    const logs = await readJsonSafe(transactionLogPath, []);
-
-    const newTx = {
-      // keep your callback-compatible field names
-      id: mpesaReceipt,
-      mpesaReceipt,
-      phone,
-      amount: Number(amount),
-      filename,
-      status: status || "Confirmed", // You can pass SUCCESS/FAILED/Confirmed etc.
-      date: date ? new Date(date).toISOString() : new Date().toISOString(),
-    };
-
-    logs.push(newTx);
-    await fs.writeFile(transactionLogPath, JSON.stringify(logs, null, 2));
-
-    res.json({ success: true, transaction: normalizeTx(newTx) });
-  } catch (err) {
-    console.error("Error saving transaction:", err);
-    res.status(500).json({ error: "Failed to save transaction" });
-  }
-});
-
-// ===== GET ALL TRANSACTIONS (raw, unpaginated) =====
-// GET /api/transactions
-app.get("/api/transactions", async (_req, res) => {
-  try {
-    const logs = await readJsonSafe(transactionLogPath, []);
-    res.json(logs.map(normalizeTx));
-  } catch (err) {
-    console.error("Error reading transactions:", err);
-    res.status(500).json({ error: "Failed to read transactions" });
-  }
-});
-
-// ===== GET SINGLE TRANSACTION BY RECEIPT/ID =====
-// GET /api/transactions/:id
-app.get("/api/transactions/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const logs = await readJsonSafe(transactionLogPath, []);
-
-    // match either mpesaReceipt or id
-    const raw = logs.find(t => String(t.mpesaReceipt || t.id) === String(id));
-    if (!raw) return res.status(404).json({ error: "Transaction not found" });
-
-    const tx = normalizeTx(raw);
-    res.json(tx);
-  } catch (err) {
-    console.error("Error fetching transaction:", err);
-    res.status(500).json({ error: "Failed to fetch transaction" });
-  }
-});
-
-module.exports = router;
-
-// Mount the router so /api/transactions works
-app.use('/', router);
-
-
-// === SERVER START ===
+/* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
-
-
-
-
-
-
