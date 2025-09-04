@@ -146,9 +146,11 @@ async function saveTokens() {
 // health
 app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manager is running.'));
 
+
 /* ---------- Upload ---------- */
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
+    console.log('📂 File saved at:', req.file.path); 
     const { title, subject, class: className, price, type, category } = req.body;
     if (!req.file || !title || !subject || !className || !price || !type || !category) {
       return res.status(400).json({ success: false, message: 'Missing fields' });
@@ -179,6 +181,14 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
 /* ---------- List files (metadata) ---------- */
 app.get('/api/files', (_req, res) => res.json(metadataCache));
+app.get('/api/list-files', async (req, res) => {
+  try {
+    const files = await fs.readdir(uploadDir);
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: 'Unable to list files', details: err.message });
+  }
+});
 
 /* ---------- Serve a file with token check ---------- */
 /*
@@ -667,4 +677,5 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
