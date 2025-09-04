@@ -150,6 +150,7 @@ app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manage
 /* ---------- Upload ---------- */
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
+    console.log('📂 File saved at:', req.file.path);
     const metadata = {
       id: Date.now(),
       title: req.body.title,
@@ -158,26 +159,21 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       category: req.body.category,
       price: req.body.price,
       type: req.body.type,
-      filename: req.file.filename,  // ✅ use multer’s final name, not original
+      filename: req.file.filename,  // ✅ sanitized & actual saved name
       mimetype: req.file.mimetype,
-      path: `/api/uploads/${req.file.filename}`, // ✅ also fixed
+      path: `/api/uploads/${req.file.filename}`, // ✅ matches saved
       uploadDate: new Date()
     };
 
-    // Save metadata to your JSON/db
-    let data = [];
-    try {
-      const fileData = await fs.readFile('metadata.json', 'utf8');
-      data = JSON.parse(fileData);
-    } catch (err) {}
-    data.push(metadata);
-    await fs.writeFile('metadata.json', JSON.stringify(data, null, 2));
+    metadataCache.push(metadata);
+    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
 
     res.json(metadata);
   } catch (err) {
     res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
+
 
 /* ---------- List files (metadata) ---------- */
 app.get('/api/files', (_req, res) => res.json(metadataCache));
@@ -252,29 +248,56 @@ app.get('/api/files/:filename', async (req, res) => {
   }
 });
 
-/* ---------- Delete file (admin) ---------- */
-app.delete('/api/files/:filename', async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const key = req.headers.apikey;
-    if (!ADMIN_SECRET.includes(key)) {
-      return res.status(403).json({ success: false, message: "Unauthorized" });
-    }
+/* ---------- Admin Metadata Management ---------- */
 
-    const fullPath = path.join(uploadDir, filename);
-    if (!(await fileExists(fullPath))) {
-      return res.status(404).json({ success: false, message: 'File not found' });
-    }
-
-    await fs.unlink(fullPath);
-    metadataCache = metadataCache.filter(f => f.filename !== filename);
-    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
-    return res.json({ success: true, message: 'File deleted' });
-  } catch (e) {
-    console.error('Error deleting file:', e);
-    return res.status(500).json({ success: false, message: 'Delete failed' });
+// View all metadata
+app.get('/api/admin/files', async (req, res) => {
+  const key = req.headers.apikey;
+  if (!ADMIN_SECRET.includes(key)) {
+    return res.status(403).json({ success: false, message: "Unauthorized" });
   }
+  res.json(metadataCache);
 });
+
+// Edit metadata by filename
+app.put('/api/admin/files/:filename', async (req, res) => {
+  const key = req.headers.apikey;
+  if (!ADMIN_SECRET.includes(key)) {
+    return res.status(403).json({ success: false, message: "Unauthorized" });
+  }
+
+  const { filename } = req.params;
+  const updates = req.body;
+
+  let fileMeta = metadataCache.find(f => f.filename === filename);
+  if (!fileMeta) {
+    return res.status(404).json({ success: false, message: 'Metadata not found' });
+  }
+
+  fileMeta = Object.assign(fileMeta, updates);
+  await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
+  res.json({ success: true, metadata: fileMeta });
+});
+
+// Delete metadata only (not the file itself, unless you want both)
+app.delete('/api/admin/files/:filename/metadata', async (req, res) => {
+  const key = req.headers.apikey;
+  if (!ADMIN_SECRET.includes(key)) {
+    return res.status(403).json({ success: false, message: "Unauthorized" });
+  }
+
+  const { filename } = req.params;
+  const before = metadataCache.length;
+  metadataCache = metadataCache.filter(f => f.filename !== filename);
+  await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
+
+  if (metadataCache.length === before) {
+    return res.status(404).json({ success: false, message: 'Metadata not found' });
+  }
+
+  res.json({ success: true, message: 'Metadata deleted' });
+});
+
 
 /* === M-PESA CONFIG & STK PUSH (unchanged logic) === */
 const consumerkey = process.env.MPESA_CONSUMER_KEY || "NkxcAadvkohxGErrIm84VAccHA3nfSSRd5DH0mIe9sv9DDCn";
@@ -677,6 +700,7 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
