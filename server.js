@@ -80,11 +80,11 @@ async function fileExists(filePath) {
 
 /* === Multer storage === */
 const storage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, uploadDir),
-  filename: (_, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/\s+/g, '_');
-    cb(null, `${base}_${Date.now()}${ext}`);
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    // Replace spaces & special characters with underscores
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    cb(null, safeName.split('.')[0] + '_' + Date.now() + path.extname(file.originalname));
   }
 });
 const upload = multer({ storage });
@@ -150,32 +150,32 @@ app.get('/', (req, res) => res.send('🎉 Turbo Server with M-Pesa & File Manage
 /* ---------- Upload ---------- */
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
-    console.log('📂 File saved at:', req.file.path); 
-    const { title, subject, class: className, price, type, category } = req.body;
-    if (!req.file || !title || !subject || !className || !price || !type || !category) {
-      return res.status(400).json({ success: false, message: 'Missing fields' });
-    }
-
-    const fileInfo = {
+    const metadata = {
       id: Date.now(),
-      title,
-      subject,
-      class: className,
-      category,
-      price,
-      type,
-      filename: req.file.filename,
+      title: req.body.title,
+      subject: req.body.subject,
+      class: req.body.class,
+      category: req.body.category,
+      price: req.body.price,
+      type: req.body.type,
+      filename: req.file.filename,  // ✅ use multer’s final name, not original
       mimetype: req.file.mimetype,
-      path: `/api/uploads/${req.file.filename}`,
-      uploadDate: new Date().toISOString()
+      path: `/api/uploads/${req.file.filename}`, // ✅ also fixed
+      uploadDate: new Date()
     };
 
-    metadataCache.push(fileInfo);
-    await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2), 'utf8');
-    return res.json({ success: true, file: fileInfo });
+    // Save metadata to your JSON/db
+    let data = [];
+    try {
+      const fileData = await fs.readFile('metadata.json', 'utf8');
+      data = JSON.parse(fileData);
+    } catch (err) {}
+    data.push(metadata);
+    await fs.writeFile('metadata.json', JSON.stringify(data, null, 2));
+
+    res.json(metadata);
   } catch (err) {
-    console.error('Upload error:', err);
-    return res.status(500).json({ success: false, message: 'Upload failed' });
+    res.status(500).json({ error: 'Upload failed', details: err.message });
   }
 });
 
@@ -677,5 +677,6 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
