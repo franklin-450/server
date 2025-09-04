@@ -168,7 +168,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     metadataCache.push(metadata);
     await fs.writeFile(metadataPath, JSON.stringify(metadataCache, null, 2));
 
-    res.json(metadata);
+    res.json({ success: true, metadata });
   } catch (err) {
     res.status(500).json({ error: 'Upload failed', details: err.message });
   }
@@ -700,6 +700,7 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
