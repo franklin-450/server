@@ -453,72 +453,55 @@ app.get('/api/confirm', async (req, res) => {
    Accepts malformed tokens that contain '?token=' (will extract), or if token is a filename,
    it will try to locate an active token for that filename and serve.
 */
-// Secure download route (only valid tokens work)
+// Secure download route (one-time token + STK push re-validation)
 app.get('/download', async (req, res) => {
   try {
     const token = (req.query.token || '').toString().trim();
     const entry = downloadTokens.get(token);
 
-    if (!entry || entry.expires < Date.now()) {
-      return res.status(403).send('❌ Invalid or expired token');
+    // Token missing or already used
+    if (!entry) {
+      return res.status(403).json({
+        success: false,
+        message: '❌ Token expired. Please complete STK push payment to get a new one.'
+      });
+    }
+
+    // Token expired by time
+    if (entry.expires < Date.now()) {
+      downloadTokens.delete(token);
+      await saveTokens().catch(console.error);
+      return res.status(403).json({
+        success: false,
+        message: '❌ Token expired by time. Please complete STK push payment again.'
+      });
     }
 
     const filePath = path.join(uploadDir, entry.filename);
     if (!(await fileExists(filePath))) {
-      return res.status(404).send('❌ File not found');
+      return res.status(404).json({ success: false, message: '❌ File not found' });
     }
 
-    return res.download(filePath, entry.filename, (err) => {
+    // Find pretty name from metadata
+    const meta = metadataCache.find(m => m.filename === entry.filename);
+    const displayName = meta?.title
+      ? meta.title.replace(/[^\w.\-]/g, "_") + path.extname(entry.filename)
+      : entry.filename;
+
+    return res.download(filePath, displayName, async (err) => {
       if (err) {
         console.error('❌ Error serving file:', err);
-        return res.status(500).send('Error downloading file');
+        return res.status(500).json({ success: false, message: 'Error downloading file' });
       } else {
-        downloadTokens.delete(token); // one-time use
-        saveTokens().catch(console.error);
-        console.log(`✅ File downloaded: ${entry.filename} (token ${token})`);
+        // Delete token after successful download (one-time use)
+        downloadTokens.delete(token);
+        await saveTokens().catch(console.error);
+        console.log(`✅ File downloaded: ${entry.filename} (as ${displayName})`);
       }
     });
   } catch (err) {
     console.error('❌ Error in /download:', err);
-    res.status(500).send('Server error');
-  }
-});
-
-// Secure API file fetch route (preview with token)
-app.get('/api/files/:filename', async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const token = (req.query.token || '').toString().trim();
-    const entry = downloadTokens.get(token);
-
-    if (!entry || entry.filename !== filename || entry.expires < Date.now()) {
-      return res.status(403).send('❌ Invalid or expired token');
-    }
-
-    const filePath = path.join(uploadDir, filename);
-    if (!(await fileExists(filePath))) {
-      return res.status(404).send('❌ File not found');
-    }
-
-    return res.download(filePath, filename, (err) => {
-      if (err) {
-        console.error('❌ Error serving file:', err);
-        return res.status(500).send('Error downloading file');
-      } else {
-        downloadTokens.delete(token); // one-time use
-        saveTokens().catch(console.error);
-        console.log(`✅ File served via /api/files: ${filename} (token ${token})`);
-      }
-    });
-  } catch (err) {
-    console.error('❌ Error in /api/files/:filename:', err);
-    res.status(500).send('Server error');
-  }
-});
-
-   catch (err) {
-    console.error('❌ Error in /download:', err);
-    res.status(500).send('Server error');
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -714,6 +697,7 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
