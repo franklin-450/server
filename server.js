@@ -516,7 +516,7 @@ app.get('/api/files/:filename', async (req, res) => {
   }
 });
 
-  } catch (err) {
+   catch (err) {
     console.error('❌ Error in /download:', err);
     res.status(500).send('Server error');
   }
@@ -714,6 +714,7 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
