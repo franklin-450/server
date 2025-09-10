@@ -453,54 +453,68 @@ app.get('/api/confirm', async (req, res) => {
    Accepts malformed tokens that contain '?token=' (will extract), or if token is a filename,
    it will try to locate an active token for that filename and serve.
 */
+// Secure download route (only valid tokens work)
 app.get('/download', async (req, res) => {
   try {
-    let raw = (req.query.token || '').toString();
-
-    // handle URLs like: ?token=<filename>?token=<realtoken>
-    if (raw.includes('?token=')) {
-      raw = raw.split('?token=')[0];
-    }
-    if (raw.includes('&token=')) {
-      raw = raw.split('&token=')[0];
-    }
-
-    // If the token looks like a filename (contains '.' and not hex chars), try to find matching token
-    let token = raw;
-    let entry = downloadTokens.get(token);
-
-    if ((!entry || entry.expires < Date.now()) && token && token.includes('.')) {
-      const now = Date.now();
-      const found = [...downloadTokens.entries()].find(([k, v]) => v.filename === token && v.expires > now);
-      if (found) {
-        token = found[0];
-        entry = found[1];
-      } else {
-        entry = null;
-      }
-    }
+    const token = (req.query.token || '').toString().trim();
+    const entry = downloadTokens.get(token);
 
     if (!entry || entry.expires < Date.now()) {
-      return res.status(403).send('Invalid or expired token');
+      return res.status(403).send('❌ Invalid or expired token');
     }
 
     const filePath = path.join(uploadDir, entry.filename);
     if (!(await fileExists(filePath))) {
-      console.error('Error serving file: file not found', filePath);
-      return res.status(404).send('File not found');
+      return res.status(404).send('❌ File not found');
     }
 
     return res.download(filePath, entry.filename, (err) => {
       if (err) {
-        console.error('Error serving file:', err);
+        console.error('❌ Error serving file:', err);
         return res.status(500).send('Error downloading file');
       } else {
-        // Invalidate token after download to avoid reuse
-        downloadTokens.delete(token);
+        downloadTokens.delete(token); // one-time use
         saveTokens().catch(console.error);
         console.log(`✅ File downloaded: ${entry.filename} (token ${token})`);
       }
     });
+  } catch (err) {
+    console.error('❌ Error in /download:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// Secure API file fetch route (preview with token)
+app.get('/api/files/:filename', async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const token = (req.query.token || '').toString().trim();
+    const entry = downloadTokens.get(token);
+
+    if (!entry || entry.filename !== filename || entry.expires < Date.now()) {
+      return res.status(403).send('❌ Invalid or expired token');
+    }
+
+    const filePath = path.join(uploadDir, filename);
+    if (!(await fileExists(filePath))) {
+      return res.status(404).send('❌ File not found');
+    }
+
+    return res.download(filePath, filename, (err) => {
+      if (err) {
+        console.error('❌ Error serving file:', err);
+        return res.status(500).send('Error downloading file');
+      } else {
+        downloadTokens.delete(token); // one-time use
+        saveTokens().catch(console.error);
+        console.log(`✅ File served via /api/files: ${filename} (token ${token})`);
+      }
+    });
+  } catch (err) {
+    console.error('❌ Error in /api/files/:filename:', err);
+    res.status(500).send('Server error');
+  }
+});
 
   } catch (err) {
     console.error('❌ Error in /download:', err);
@@ -700,6 +714,7 @@ setInterval(() => {
 
 /* ---------- Start server ---------- */
 app.listen(PORT, () => console.log(`✅ Turbo Server running at http://localhost:${PORT}`));
+
 
 
 
